@@ -81,6 +81,7 @@ El versionado se lleva en [`VERSION`](VERSION) y en los tags de git (fuente de v
 | APK | JDK 17, Android SDK 35 | `cd apps/android && gradle assembleRelease` |
 | MSI | Rust, Node 20, WebView2 | `cd apps/admin-windows && npm install && npm run tauri build` |
 | Web | Node 20 | `cd apps/web && npm install && npm run dev` |
+| Backend | Node 20 (sin dependencias) | `cd services/backend && npm start` · `npm test` |
 
 > El APK sin keystore se firma con la clave de debug (instalable). Para releases firmadas,
 > el workflow usa los secretos `ANDROID_KEYSTORE_*` del repositorio.

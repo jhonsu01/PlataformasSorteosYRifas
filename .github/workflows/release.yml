@@ -101,6 +101,8 @@ jobs:
           tmp=$(mktemp)
           jq --arg v "$VER" '.version=$v' src-tauri/tauri.conf.json > "$tmp"
           mv "$tmp" src-tauri/tauri.conf.json
+          # Tambien en Cargo.toml para que app_version() (CARGO_PKG_VERSION) muestre la version real.
+          sed -i.bak "s/^version = \".*\"/version = \"$VER\"/" src-tauri/Cargo.toml && rm -f src-tauri/Cargo.toml.bak
           echo "Version fijada a $VER"
 
       - name: Install frontend deps

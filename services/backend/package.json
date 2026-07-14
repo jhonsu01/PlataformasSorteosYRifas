@@ -1,0 +1,12 @@
+{
+  "name": "sorteos-rifas-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Backend API de Sorteos y Rifas: reservas atomicas, webhook Wompi, aprobacion manual y publicador privacy-safe a GitHub.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}

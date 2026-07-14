@@ -11,12 +11,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -144,6 +149,8 @@ private fun ErrorView(msg: String) {
 private fun Content(raffle: Raffle, sold: List<Sold>, winner: DrawWinner?) {
     val soldByNumber = remember(sold) { sold.associateBy { it.number } }
     val total = (raffle.max - raffle.min + 1).coerceAtLeast(0)
+    // Inset inferior (barra de navegacion) para que la ultima fila no quede tapada.
+    val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     Column(Modifier.fillMaxSize()) {
         Header(raffle, sold.size, total)
@@ -151,7 +158,7 @@ private fun Content(raffle: Raffle, sold: List<Sold>, winner: DrawWinner?) {
         Legend()
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 56.dp),
-            contentPadding = PaddingValues(16.dp),
+            contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 16.dp + navBottom),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxSize(),
@@ -173,7 +180,10 @@ private fun Header(raffle: Raffle, soldCount: Int, total: Int) {
     Box(
         Modifier
             .fillMaxWidth()
+            // El gradiente cubre TODO el Box (incluida el area de la barra de estado);
+            // windowInsetsPadding empuja el contenido debajo de la barra de estado.
             .background(Brush.verticalGradient(listOf(BrandViolet, BrandPink)))
+            .windowInsetsPadding(WindowInsets.statusBars)
             .padding(20.dp)
     ) {
         Column {
