@@ -1,0 +1,14 @@
+{
+  "name": "sorteos-rifas-admin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App de administracion de Sorteos y Rifas (Tauri -> MSI)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

@@ -1,0 +1,66 @@
+# =========================================================================
+# Framework de orquestacion del agente (privado — no va al repo publico)
+# =========================================================================
+/CLAUDE.md
+/AGENTS.md
+/GEMINI.md
+/.claude/
+/memory/
+/directives/
+/.tmp/
+
+# Guia canonica vive en docs/Guia.md; ignoramos la copia en la raiz.
+/Guia.md
+
+# =========================================================================
+# Node / Next.js
+# =========================================================================
+node_modules/
+.next/
+out/
+dist/
+*.log
+npm-debug.log*
+
+# =========================================================================
+# Android / Gradle
+# =========================================================================
+.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/android/local.properties
+apps/android/.idea/
+*.apk
+*.aab
+
+# =========================================================================
+# Rust / Tauri
+# =========================================================================
+apps/admin-windows/src-tauri/target/
+apps/admin-windows/src-tauri/gen/schemas/
+*.msi
+
+# =========================================================================
+# Python
+# =========================================================================
+__pycache__/
+*.pyc
+
+# =========================================================================
+# Secretos / firmas (NUNCA en el repo)
+# =========================================================================
+.env
+.env.local
+.env.*.local
+*.keystore
+*.jks
+*.pem
+credentials.json
+token.json
+
+# =========================================================================
+# Sistema operativo / editores
+# =========================================================================
+.DS_Store
+Thumbs.db
+.vscode/

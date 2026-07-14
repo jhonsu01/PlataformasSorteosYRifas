@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plataformas-sorteos-y-rifas/schemas/raffle.schema.json",
+  "title": "Raffle (configuracion publica del sorteo)",
+  "description": "Configuracion publica de una rifa. Se publica en el repo GitHub de la rifa (public/raffle.json). NO contiene datos personales ni secretos.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "slug",
+    "title",
+    "prize",
+    "priceCents",
+    "currency",
+    "numberRange",
+    "startsAt",
+    "endsAt",
+    "status"
+  ],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "description": "Identificador unico legible. Coincide con el nombre del repo.",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 60
+    },
+    "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "description": { "type": "string", "maxLength": 1000 },
+    "prize": { "type": "string", "minLength": 3, "maxLength": 200 },
+    "termsUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "priceCents": { "type": "integer", "minimum": 0 },
+    "currency": { "type": "string", "enum": ["COP"] },
+    "numberRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer", "minimum": 0 },
+        "max": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "startsAt": { "type": "string", "format": "date-time" },
+    "endsAt": { "type": "string", "format": "date-time" },
+    "minSoldToDraw": { "type": "integer", "minimum": 0 },
+    "status": {
+      "type": "string",
+      "enum": ["DRAFT", "ACTIVE", "SALES_CLOSED", "DRAWN", "POSTPONED", "ARCHIVED"]
+    },
+    "winner": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Null mientras no haya ganador. Cuando se declara, el ganador canonico vive en draw.json.",
+      "required": ["number", "buyer", "purchasedAt", "verifiedAt"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 0 },
+        "buyer": {
+          "type": "string",
+          "pattern": "^[A-ZÑ][a-zñáéíóú]+(?: [A-ZÑ]\\.)?$"
+        },
+        "purchasedAt": { "type": "string", "format": "date-time" },
+        "verifiedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

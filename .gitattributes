@@ -1,0 +1,12 @@
+# Normaliza saltos de linea: LF en el repo (evita romper scripts bash en CI).
+* text=auto eol=lf
+
+# Binarios: sin conversion.
+*.png binary
+*.ico binary
+*.icns binary
+*.jar binary
+*.keystore binary
+*.jks binary
+*.apk binary
+*.msi binary

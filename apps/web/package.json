@@ -1,0 +1,17 @@
+{
+  "name": "sorteos-rifas-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web publica de Sorteos y Rifas (Next.js -> Vercel)",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.15",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}

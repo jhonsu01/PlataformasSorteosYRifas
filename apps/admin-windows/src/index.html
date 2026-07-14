@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sorteos y Rifas — Administración</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-badge">🎟️</div>
+        <div>
+          <div class="brand-name">Sorteos y Rifas</div>
+          <div class="brand-sub">Administración</div>
+        </div>
+      </div>
+      <nav>
+        <a class="nav-item active">📊 Panel</a>
+        <a class="nav-item">🎫 Rifas</a>
+        <a class="nav-item">🧾 Comprobantes</a>
+        <a class="nav-item">🏆 Ganadores</a>
+        <a class="nav-item">⚙️ Configuración</a>
+      </nav>
+      <div class="sidebar-foot">v<span id="app-version">—</span></div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div>
+          <h1>Panel de control</h1>
+          <p class="muted">Estado general del sorteo activo</p>
+        </div>
+        <div id="backend-status" class="badge badge-warn">Backend no conectado</div>
+      </header>
+
+      <section class="stats">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-pending">—</div>
+          <div class="stat-label">Comprobantes pendientes</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-sold-today">—</div>
+          <div class="stat-label">Vendidos hoy</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-sold-total">—</div>
+          <div class="stat-label">Vendidos (total)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-progress">—</div>
+          <div class="stat-label">Avance de venta</div>
+        </div>
+      </section>
+
+      <section class="panel" id="raffle-panel">
+        <h2>Rifa activa</h2>
+        <div id="raffle-body" class="muted">Cargando…</div>
+        <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+      </section>
+
+      <section class="panel">
+        <h2>Comprobantes pendientes de aprobación</h2>
+        <p class="muted small">
+          Vista de demostración. Al conectar el backend, aquí se listan los comprobantes
+          manuales con acceso privado a la imagen (nunca pública).
+        </p>
+        <ul class="approvals" id="approvals"></ul>
+      </section>
+    </main>
+
+    <div id="toast" class="toast"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

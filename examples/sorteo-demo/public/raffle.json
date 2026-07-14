@@ -1,0 +1,14 @@
+{
+  "slug": "sorteo-demo",
+  "title": "Sorteo Demo — Moto 0km",
+  "description": "Sorteo de demostración del framework abierto de Sorteos y Rifas.",
+  "prize": "Moto 0km marca X modelo Y",
+  "priceCents": 1000000,
+  "currency": "COP",
+  "numberRange": { "min": 0, "max": 99 },
+  "startsAt": "2026-07-14T00:00:00-05:00",
+  "endsAt": "2026-08-14T23:59:59-05:00",
+  "minSoldToDraw": 20,
+  "status": "ACTIVE",
+  "winner": null
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plataformas-sorteos-y-rifas/schemas/numbers.schema.json",
+  "title": "Numbers (numeros vendidos - seudonimizados)",
+  "description": "Estado publico de los numeros vendidos. Se publica en el repo GitHub de la rifa (public/numbers.json). PRIVACIDAD POR DISENO: solo nombre + inicial del apellido, numero y marcas de tiempo. Sin documento, telefono, correo, direccion ni comprobante.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sold"],
+  "properties": {
+    "version": { "type": "string", "format": "date-time" },
+    "sold": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "buyer", "purchasedAt", "verifiedAt"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 0 },
+          "buyer": {
+            "type": "string",
+            "description": "Nombre + inicial del apellido. Ej: 'Juan S.'",
+            "pattern": "^[A-ZÑ][a-zñáéíóú]+(?: [A-ZÑ]\\.)?$",
+            "minLength": 3,
+            "maxLength": 40
+          },
+          "purchasedAt": { "type": "string", "format": "date-time" },
+          "verifiedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}

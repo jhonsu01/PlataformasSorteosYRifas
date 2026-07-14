@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plataformas-sorteos-y-rifas/schemas/draw.schema.json",
+  "title": "Draw (declaracion del ganador)",
+  "description": "Ganador declarado de una rifa. Se publica en el repo GitHub (public/draw.json). El numero ganador debe corresponder a un numero SOLD validado por el backend.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["raffleSlug", "drawnAt", "winningNumber", "mechanism"],
+  "properties": {
+    "raffleSlug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "drawnAt": { "type": "string", "format": "date-time" },
+    "winningNumber": { "type": "integer", "minimum": 0 },
+    "mechanism": {
+      "type": "string",
+      "enum": ["ADMIN_INPUT", "RANDOM_FROM_SOLD"],
+      "description": "ADMIN_INPUT: admin ingresa numero (validado vs SOLD). RANDOM_FROM_SOLD: sorteo verificable sobre los vendidos."
+    },
+    "winner": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Null si el sorteo se postergo sin ganador valido.",
+      "required": ["number", "buyer", "purchasedAt", "verifiedAt"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 0 },
+        "buyer": {
+          "type": "string",
+          "pattern": "^[A-ZÑ][a-zñáéíóú]+(?: [A-ZÑ]\\.)?$"
+        },
+        "purchasedAt": { "type": "string", "format": "date-time" },
+        "verifiedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["VALID", "VOID", "POSTPONED"]
+    },
+    "note": { "type": "string", "maxLength": 300 }
+  }
+}

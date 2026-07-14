@@ -1,0 +1,30 @@
+name: CI (validar JSON público)
+
+# Valida en cada push/PR que el JSON publico cumpla el schema y NO exponga
+# datos sensibles (privacidad por diseno). Da checks verdes conforme avanza el proyecto.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-json:
+    name: Validar rifa demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar jsonschema
+        run: pip install jsonschema
+
+      - name: Validar raffle.json
+        run: python execution/validate-schema.py examples/sorteo-demo/public/raffle.json raffle
+
+      - name: Validar numbers.json
+        run: python execution/validate-schema.py examples/sorteo-demo/public/numbers.json numbers
