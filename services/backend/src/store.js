@@ -158,6 +158,12 @@ export function createStore({ reserveMinutes = 15 } = {}) {
   // --- Declaracion de ganador (valida que el numero este SOLD) ---
   function declareWinner(slug, number, mechanism = "ADMIN_INPUT") {
     const raffle = getRaffle(slug);
+    // RANDOM_FROM_SOLD: el backend elige aleatoriamente entre los vendidos.
+    if (mechanism === "RANDOM_FROM_SOLD" && (number === undefined || number === null)) {
+      const sold = soldPurchases(slug);
+      if (!sold.length) throw httpError(422, "No hay numeros vendidos para sortear");
+      number = sold[crypto.randomInt(sold.length)].number;
+    }
     const t = tickets.get(key(slug, number));
     if (!t || t.status !== "SOLD") {
       throw httpError(422, "El numero declarado no esta vendido (SOLD)");
@@ -182,6 +188,42 @@ export function createStore({ reserveMinutes = 15 } = {}) {
 
   function soldPurchases(slug) {
     return [...purchases.values()].filter((p) => p.slug === slug && p.status === "APPROVED");
+  }
+
+  // Lista de rifas con contadores (para el panel del administrador).
+  function listRaffles() {
+    return [...raffles.values()].map((r) => {
+      const total = r.numberRange.max - r.numberRange.min + 1;
+      return {
+        slug: r.slug,
+        title: r.title,
+        status: r.status,
+        sold: soldPurchases(r.slug).length,
+        total,
+        priceCents: r.priceCents,
+        numberRange: r.numberRange,
+        winner: r.winner,
+      };
+    });
+  }
+
+  // Compras para la vista de administracion (incluye datos de contacto y
+  // comprobante: rol admin/operador segun la Guia). Nunca se publica al exterior.
+  function adminPurchases(slug, statusFilter) {
+    return [...purchases.values()]
+      .filter((p) => p.slug === slug && (!statusFilter || p.status === statusFilter))
+      .sort((a, b) => new Date(a.purchasedAt) - new Date(b.purchasedAt))
+      .map((p) => ({
+        id: p.id,
+        number: p.number,
+        buyer: p.buyerPublic,
+        method: p.method,
+        status: p.status,
+        purchasedAt: p.purchasedAt,
+        verifiedAt: p.verifiedAt,
+        receiptUrl: p.receiptUrl,
+        contact: p.private,
+      }));
   }
 
   // ------------------------------------------------------------------
@@ -236,6 +278,7 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     createRaffle, getRaffle, reserve, attachReceipt, approve, reject, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
+    listRaffles, adminPurchases,
     _raffles: raffles, _tickets: tickets, _purchases: purchases,
   };
 }
