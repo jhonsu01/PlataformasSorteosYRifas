@@ -64,3 +64,7 @@ token.json
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Build de la web
+apps/web/.next/
+apps/web/out/
