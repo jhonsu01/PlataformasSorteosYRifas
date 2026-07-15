@@ -15,6 +15,7 @@ import {
   login, refreshSession, logout, requireAuth, requireLevel,
   setupTotp, enableTotp, publicUser,
 } from "./auth.js";
+import { enforceRateLimit, LIMITS } from "./rate-limit.js";
 
 const DEMO = {
   slug: "sorteo-demo",
@@ -162,7 +163,8 @@ export async function handler(req, res) {
       }
       const store = await getStore();
       const freed = await store.expireReservations();
-      return json(res, 200, { ok: true, freed });
+      const limpiados = await store.cleanupRateLimits();
+      return json(res, 200, { ok: true, freed, rateLimitsLimpiados: limpiados });
     }
 
     const store = await getStore();
@@ -170,6 +172,8 @@ export async function handler(req, res) {
     // ---------------- Autenticacion ----------------
     if (parts[0] === "api" && parts[1] === "auth") {
       if (M === "POST" && parts[2] === "login") {
+        // Frena la fuerza bruta de contrasenas.
+        await enforceRateLimit(store, req, LIMITS.login);
         const b = await readBody(req);
         try {
           return json(res, 200, await login(store, b));
@@ -261,6 +265,9 @@ export async function handler(req, res) {
     }
 
     if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "reserve") {
+      // Sin esto, un script podria reservar TODOS los numeros de la rifa (cada
+      // reserva bloquea el numero RESERVE_MINUTES) sin pagar un peso.
+      await enforceRateLimit(store, req, { ...LIMITS.reserve, extra: parts[2] });
       const b = await readBody(req);
       if (typeof b.number !== "number" || !b.buyer?.firstName) {
         return json(res, 400, { error: "number y buyer.firstName requeridos" });
@@ -309,6 +316,10 @@ export async function handler(req, res) {
     }
 
     if (M === "POST" && parts[0] === "api" && parts[1] === "webhooks" && parts[2] === "wompi") {
+      // Limite alto a proposito: Wompi reintenta los eventos y perder uno
+      // significa perder una venta. La firma ya garantiza la autenticidad;
+      // esto solo evita que una inundacion agote las invocaciones.
+      await enforceRateLimit(store, req, LIMITS.webhook);
       const event = await readBody(req);
       if (config.wompi.eventsKey) {
         if (!verifyEventSignature(event, config.wompi.eventsKey)) {
@@ -338,6 +349,8 @@ export async function handler(req, res) {
   } catch (e) {
     const status = e.status || 500;
     if (status >= 500) console.error(e);
+    // 429 debe decir cuando reintentar (cabecera estandar).
+    if (e.retryAfter) res.setHeader("Retry-After", String(e.retryAfter));
     return json(res, status, { error: e.message });
   }
 }

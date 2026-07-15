@@ -412,6 +412,25 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
     );
   }
 
+  // ------------------------------------------------------------------
+  // Rate limiting
+  // ------------------------------------------------------------------
+  /** Incremento ATOMICO: dos contenedores concurrentes no pierden cuentas. */
+  async function hitRateLimit(bucket, expiresAt) {
+    const { rows } = await q(
+      `INSERT INTO rate_limits (bucket, hits, expires_at) VALUES ($1, 1, $2)
+       ON CONFLICT (bucket) DO UPDATE SET hits = rate_limits.hits + 1
+       RETURNING hits`,
+      [bucket, expiresAt]
+    );
+    return rows[0].hits;
+  }
+
+  async function cleanupRateLimits() {
+    const r = await q(`DELETE FROM rate_limits WHERE expires_at < now()`);
+    return r.rowCount;
+  }
+
   async function close() { await pool.end(); }
 
   return {
@@ -422,6 +441,7 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
     listRaffles, adminPurchases,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,
+    hitRateLimit, cleanupRateLimits,
     close, _pool: pool,
   };
 }

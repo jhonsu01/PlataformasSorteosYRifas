@@ -28,6 +28,13 @@ export const config = {
   // Protege /api/cron/expire (Vercel Cron envia Authorization: Bearer <CRON_SECRET>).
   cronSecret: process.env.CRON_SECRET || "",
 
+  // Rate limiting (0 = desactivado). Ver src/rate-limit.js.
+  rateLimit: {
+    reserve: Number(process.env.RATE_LIMIT_RESERVE ?? 15),  // por IP / 10 min
+    login: Number(process.env.RATE_LIMIT_LOGIN ?? 10),      // por IP / 10 min
+    webhook: Number(process.env.RATE_LIMIT_WEBHOOK ?? 120), // por IP / 1 min
+  },
+
   jwt: {
     // Sin secreto configurado se genera uno aleatorio por proceso: en serverless
     // eso invalida las sesiones en cada arranque en frio -> obligatorio en produccion.

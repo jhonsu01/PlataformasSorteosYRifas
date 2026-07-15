@@ -45,7 +45,7 @@ async function freshStore() {
   const store = await createPostgresStore(URL_DB, { reserveMinutes: 15 });
   // Limpia el estado de pruebas previas.
   await store._pool.query(
-    "TRUNCATE tickets, purchases, draws, processed_events, audit_log, refresh_tokens, admin_users, raffles CASCADE"
+    "TRUNCATE tickets, purchases, draws, processed_events, audit_log, refresh_tokens, admin_users, rate_limits, raffles CASCADE"
   );
   return store;
 }
@@ -250,6 +250,39 @@ test("postgres: la auditoria registra las acciones", { skip }, async () => {
     assert.ok(acciones.includes("LOGIN"), "el login debe auditarse");
     assert.ok(acciones.includes("APPROVE_PURCHASE"));
     assert.equal(rows.find((r) => r.action === "APPROVE_PURCHASE").after.number, 5);
+  } finally { await store.close(); }
+});
+
+// --------------------------- Rate limiting en PostgreSQL ---------------------------
+// Lo critico: el contador debe ser ATOMICO. En serverless hay muchos contenedores
+// concurrentes; si el incremento perdiera cuentas, el limite seria evadible.
+
+test("postgres: el contador de rate limit es atomico bajo concurrencia", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    const expira = new Date(Date.now() + 60_000);
+    // 30 incrementos EN PARALELO sobre el mismo bucket.
+    const resultados = await Promise.all(
+      Array.from({ length: 30 }, () => store.hitRateLimit("concurrente", expira))
+    );
+    // Ninguna cuenta perdida: el maximo debe ser exactamente 30...
+    assert.equal(Math.max(...resultados), 30, "se perdieron incrementos: NO es atomico");
+    // ...y cada llamada debe haber visto un valor distinto (1..30).
+    assert.equal(new Set(resultados).size, 30, "hubo valores repetidos: condicion de carrera");
+
+    const { rows } = await store._pool.query("SELECT hits FROM rate_limits WHERE bucket='concurrente'");
+    assert.equal(rows[0].hits, 30);
+  } finally { await store.close(); }
+});
+
+test("postgres: cleanupRateLimits borra solo lo vencido", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await store.hitRateLimit("vencida", new Date(Date.now() - 5000));
+    await store.hitRateLimit("vigente", new Date(Date.now() + 60_000));
+    assert.equal(await store.cleanupRateLimits(), 1);
+    const { rows } = await store._pool.query("SELECT bucket FROM rate_limits");
+    assert.deepEqual(rows.map((r) => r.bucket), ["vigente"]);
   } finally { await store.close(); }
 });
 

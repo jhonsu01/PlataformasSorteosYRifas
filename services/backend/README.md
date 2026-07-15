@@ -80,6 +80,25 @@ curl localhost:8787/api/raffles/sorteo-demo/public/numbers.json
 # -> { "sold":[{ "number":5, "buyer":"Ana G.", "purchasedAt":..., "verifiedAt":... }] }
 ```
 
+## Rate limiting
+
+Contado **en la base** (en serverless un contador en memoria no sirve: cada contenedor
+tendría el suyo). El incremento es atómico (`INSERT … ON CONFLICT DO UPDATE`), verificado
+con 30 peticiones concurrentes contra PostgreSQL real.
+
+| Endpoint | Límite por defecto | Qué evita |
+| --- | --- | --- |
+| `POST /…/reserve` | 15 por IP / 10 min | que un script reserve toda la rifa sin pagar |
+| `POST /api/auth/login` | 10 por IP / 10 min | fuerza bruta de contraseñas |
+| `POST /api/webhooks/wompi` | 120 por IP / min | inundación (la firma ya da autenticidad) |
+
+Al superarlo: `429` + cabecera `Retry-After`. Configurable con `RATE_LIMIT_*` (0 desactiva).
+
+> ⚠️ En Colombia el tráfico móvil sale por **CGNAT**: varios compradores comparten IP.
+> Los límites son holgados a propósito; bajarlos mucho bloquea usuarios legítimos.
+
+El cron (`/api/cron/expire`) barre las ventanas vencidas.
+
 ## Privacidad por diseño
 
 El estado público **solo** contiene `number`, `buyer` (`Nombre I.`), `purchasedAt` y

@@ -335,6 +335,26 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     auditEntries.push({ ...entry, createdAt: new Date().toISOString() });
   }
 
+  // --- Rate limiting (equivalente en memoria; en serverless usar el de PostgreSQL) ---
+  const rateBuckets = new Map();
+
+  function hitRateLimit(bucket, expiresAt) {
+    const b = rateBuckets.get(bucket);
+    if (!b || b.expiresAt <= new Date()) {
+      rateBuckets.set(bucket, { hits: 1, expiresAt: new Date(expiresAt) });
+      return 1;
+    }
+    b.hits += 1;
+    return b.hits;
+  }
+
+  function cleanupRateLimits() {
+    const now = new Date();
+    let n = 0;
+    for (const [k, v] of rateBuckets) if (v.expiresAt < now) { rateBuckets.delete(k); n++; }
+    return n;
+  }
+
   return {
     kind: "memory",
     createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, markSold,
@@ -343,6 +363,7 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     listRaffles, adminPurchases,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,
+    hitRateLimit, cleanupRateLimits,
     close: async () => {},
     _raffles: raffles, _tickets: tickets, _purchases: purchases, _audit: auditEntries,
   };
