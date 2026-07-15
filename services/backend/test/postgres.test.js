@@ -253,6 +253,45 @@ test("postgres: la auditoria registra las acciones", { skip }, async () => {
   } finally { await store.close(); }
 });
 
+// --------------------------- Anulacion en PostgreSQL ---------------------------
+test("postgres: anular venta libera el numero y lo saca del publico", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await store.createRaffle(RAFFLE);
+    const p = await store.reserve("pg-test", 12, { firstName: "Ana", lastName: "Gomez" });
+    await store.approve(p.id);
+    assert.equal((await store.publicNumbers("pg-test")).sold.length, 1);
+
+    const anulada = await store.voidPurchase(p.id, { reason: "cobro por error" });
+    assert.equal(anulada.status, "VOID");
+    assert.equal((await store.publicNumbers("pg-test")).sold.length, 0);
+
+    // El ticket quedo realmente libre en la base (no solo en la vista publica).
+    const { rows } = await store._pool.query(
+      "SELECT status, purchase_id FROM tickets WHERE slug='pg-test' AND number=12"
+    );
+    assert.equal(rows[0].status, "FREE");
+    assert.equal(rows[0].purchase_id, null);
+
+    // Y otro comprador puede tomarlo.
+    assert.equal((await store.reserve("pg-test", 12, { firstName: "Otro", lastName: "Comprador" })).number, 12);
+  } finally { await store.close(); }
+});
+
+test("postgres: no se puede anular al ganador declarado", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await store.createRaffle(RAFFLE);
+    const p = await store.reserve("pg-test", 15, { firstName: "Nina", lastName: "Rojas" });
+    await store.approve(p.id);
+    await store.declareWinner("pg-test", 15, "ADMIN_INPUT");
+    await assert.rejects(() => store.voidPurchase(p.id), /ganador/);
+    // Y la venta sigue intacta tras el rechazo (la transaccion no dejo residuos).
+    assert.equal((await store.getPurchase(p.id)).status, "APPROVED");
+    assert.equal((await store.publicNumbers("pg-test")).sold.length, 1);
+  } finally { await store.close(); }
+});
+
 // --------------------------- Rate limiting en PostgreSQL ---------------------------
 // Lo critico: el contador debe ser ATOMICO. En serverless hay muchos contenedores
 // concurrentes; si el incremento perdiera cuentas, el limite seria evadible.

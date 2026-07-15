@@ -171,11 +171,11 @@ fun RaffleApp() {
 
         buyNumber?.let { n ->
             PurchaseDialog(
-                number = n, priceCents = raffle!!.priceCents,
+                etiqueta = padNum(n, raffle!!.max), priceCents = raffle!!.priceCents,
                 onDismiss = { buyNumber = null },
                 onConfirm = { first, last, phone ->
                     buyNumber = null
-                    busyMsg = "Reservando número $n…"
+                    busyMsg = "Reservando número ${padNum(n, raffle!!.max)}…"
                     // Reserva en el backend y abre el checkout de Wompi.
                     scope.launch {
                         try {
@@ -249,7 +249,7 @@ private fun Content(
 
     Column(Modifier.fillMaxSize()) {
         Header(raffle, sold.size, total, onSettings)
-        if (winner != null) WinnerBanner(winner)
+        if (winner != null) WinnerBanner(winner, raffle.max)
         Legend()
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 56.dp),
@@ -260,7 +260,7 @@ private fun Content(
         ) {
             items((raffle.min..raffle.max).toList()) { n ->
                 val s = soldByNumber[n]
-                NumberCell(n, s, winner?.number == n) { if (s == null) onPickNumber(n) }
+                NumberCell(padNum(n, raffle.max), s, winner?.number == n) { if (s == null) onPickNumber(n) }
             }
         }
     }
@@ -309,7 +309,7 @@ private fun Pill(text: String) {
 }
 
 @Composable
-private fun WinnerBanner(winner: DrawWinner) {
+private fun WinnerBanner(winner: DrawWinner, max: Int) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(16.dp),
         colors = CardDefaults.cardColors(containerColor = Gold),
@@ -317,7 +317,7 @@ private fun WinnerBanner(winner: DrawWinner) {
         Column(Modifier.padding(16.dp)) {
             Text("🏆 ¡Tenemos ganador!", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Spacer(Modifier.height(4.dp))
-            Text("Número ${winner.number} — ${winner.buyer}", fontSize = 15.sp)
+            Text("Número ${padNum(winner.number, max)} — ${winner.buyer}", fontSize = 15.sp)
         }
     }
 }
@@ -342,7 +342,7 @@ private fun LegendItem(color: Color, label: String) {
 }
 
 @Composable
-private fun NumberCell(number: Int, sold: Sold?, isWinner: Boolean, onClick: () -> Unit) {
+private fun NumberCell(etiqueta: String, sold: Sold?, isWinner: Boolean, onClick: () -> Unit) {
     val bg = when {
         isWinner -> Gold
         sold != null -> BrandViolet
@@ -359,7 +359,7 @@ private fun NumberCell(number: Int, sold: Sold?, isWinner: Boolean, onClick: () 
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(number.toString(), color = fg, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(etiqueta, color = fg, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             if (sold != null) {
                 Text(sold.buyer, color = fg.copy(alpha = 0.9f), fontSize = 8.sp, maxLines = 1, textAlign = TextAlign.Center)
             }
@@ -390,13 +390,13 @@ private fun SettingsDialog(backendBase: String, slug: String, onDismiss: () -> U
 }
 
 @Composable
-private fun PurchaseDialog(number: Int, priceCents: Long, onDismiss: () -> Unit, onConfirm: (String, String, String) -> Unit) {
+private fun PurchaseDialog(etiqueta: String, priceCents: Long, onDismiss: () -> Unit, onConfirm: (String, String, String) -> Unit) {
     var first by remember { mutableStateOf("") }
     var last by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Comprar número $number") },
+        title = { Text("Comprar número $etiqueta") },
         text = {
             Column {
                 Text("Precio: ${formatCop(priceCents)}", fontWeight = FontWeight.Medium)
@@ -565,6 +565,16 @@ private fun parseWinner(raffleJson: JSONObject): DrawWinner? {
     val w = raffleJson.optJSONObject("winner") ?: return null
     return DrawWinner(w.getInt("number"), w.getString("buyer"))
 }
+
+/**
+ * Formatea el numero de la rifa conservando los ceros a la izquierda: 1 -> "001".
+ * En Colombia el ganador suele salir de las ultimas 3 cifras de una loteria
+ * externa, asi que "001" es un numero distinto de "010" o "100": mostrarlo sin
+ * los ceros seria incorrecto, no solo feo.
+ * El ancho sale del maximo del rango (999 -> 3 digitos, 99 -> 2).
+ */
+private fun padNum(n: Int, max: Int): String =
+    n.toString().padStart(max.toString().length, '0')
 
 private fun formatCop(cents: Long): String {
     val nf = NumberFormat.getCurrencyInstance(Locale("es", "CO"))

@@ -210,6 +210,36 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
     });
   }
 
+  /**
+   * Anula una venta aprobada: libera el numero y marca la compra como VOID.
+   * En transaccion: no puede quedar la compra anulada con el numero aun ocupado.
+   */
+  async function voidPurchase(purchaseId, { reason = "" } = {}) {
+    return tx(async (c) => {
+      const cur = await c.query(
+        `SELECT p.*, r.winner FROM purchases p JOIN raffles r ON r.slug = p.slug WHERE p.id = $1`,
+        [purchaseId]
+      );
+      if (!cur.rows.length) throw httpError(404, "Compra no encontrada");
+      const row = cur.rows[0];
+      if (row.status !== "APPROVED") throw httpError(409, "Solo se puede anular una venta aprobada");
+      // Anular al ganador dejaria draw.json apuntando a un numero sin vender.
+      if (row.winner && row.winner.number === row.number) {
+        throw httpError(409, "No se puede anular el numero ganador de un sorteo ya declarado");
+      }
+      const upd = await c.query(
+        `UPDATE purchases SET status='VOID', note=$2 WHERE id=$1 RETURNING *`,
+        [purchaseId, reason]
+      );
+      await c.query(
+        `UPDATE tickets SET status='FREE', reserved_until=NULL, purchase_id=NULL
+           WHERE slug=$1 AND number=$2`,
+        [row.slug, row.number]
+      );
+      return mapPurchase(upd.rows[0]);
+    });
+  }
+
   async function findByReference(reference) {
     const { rows } = await q(`SELECT * FROM purchases WHERE reference=$1`, [reference]);
     return rows.length ? mapPurchase(rows[0]) : null;
@@ -442,7 +472,7 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
 
   return {
     kind: "postgres",
-    createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, markSold,
+    createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,

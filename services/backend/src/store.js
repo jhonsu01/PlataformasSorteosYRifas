@@ -141,6 +141,29 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     return p;
   }
 
+  /**
+   * Anula una venta ya aprobada: libera el numero y marca la compra como VOID.
+   * Necesario para errores y devoluciones (la Guia contempla el caso pero no
+   * existia forma de hacerlo: solo se podia aprobar o rechazar antes de cobrar).
+   */
+  function voidPurchase(purchaseId, { reason = "" } = {}) {
+    const p = purchases.get(purchaseId);
+    if (!p) throw httpError(404, "Compra no encontrada");
+    if (p.status !== "APPROVED") {
+      throw httpError(409, "Solo se puede anular una venta aprobada");
+    }
+    const raffle = raffles.get(p.slug);
+    // Anular al ganador dejaria draw.json apuntando a un numero sin vender.
+    if (raffle?.winner && raffle.winner.number === p.number) {
+      throw httpError(409, "No se puede anular el numero ganador de un sorteo ya declarado");
+    }
+    p.status = "VOID";
+    p.note = reason;
+    const t = tickets.get(key(p.slug, p.number));
+    if (t) releaseTicket(t);
+    return p;
+  }
+
   function markSold(p, { approvedBy = "wompi", wompiTransactionId = null } = {}) {
     if (p.status === "APPROVED") return p; // idempotente
     p.status = "APPROVED";
@@ -357,7 +380,7 @@ export function createStore({ reserveMinutes = 15 } = {}) {
 
   return {
     kind: "memory",
-    createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, markSold,
+    createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,

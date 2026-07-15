@@ -94,3 +94,38 @@ test("verificacion de firma del webhook Wompi (roundtrip)", () => {
   const tampered = { ...event, signature: { ...event.signature, checksum: "DEADBEEF" } };
   assert.equal(verifyEventSignature(tampered, secret), false);
 });
+
+// --------------------------- Anulacion de ventas ---------------------------
+test("anular venta: libera el numero y lo saca del estado publico", async () => {
+  const store = createStore();
+  demoRaffle(store);
+  const p = store.reserve("t", 4, { firstName: "Ana", lastName: "Gomez" });
+  store.approve(p.id);
+  assert.equal(store.publicNumbers("t").sold.length, 1);
+
+  store.voidPurchase(p.id, { reason: "cobro por error" });
+  assert.equal(store.publicNumbers("t").sold.length, 0, "debe salir del estado publico");
+
+  // El numero vuelve a estar libre para otro comprador.
+  const p2 = store.reserve("t", 4, { firstName: "Otro", lastName: "Comprador" });
+  assert.equal(p2.number, 4);
+});
+
+test("anular venta: solo sobre ventas aprobadas", async () => {
+  const store = createStore();
+  demoRaffle(store);
+  const p = store.reserve("t", 5, { firstName: "Ana", lastName: "Gomez" });
+  // Pendiente: no se anula, se rechaza.
+  assert.throws(() => store.voidPurchase(p.id), /aprobada/);
+  assert.throws(() => store.voidPurchase("no-existe"), /no encontrada/);
+});
+
+test("anular venta: NO se puede anular al ganador ya declarado", async () => {
+  const store = createStore();
+  demoRaffle(store);
+  const p = store.reserve("t", 6, { firstName: "Ana", lastName: "Gomez" });
+  store.approve(p.id);
+  store.declareWinner("t", 6, "ADMIN_INPUT");
+  // Anularlo dejaria draw.json apuntando a un numero sin vender.
+  assert.throws(() => store.voidPurchase(p.id), /ganador/);
+});

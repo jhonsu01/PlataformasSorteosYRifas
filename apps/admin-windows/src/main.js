@@ -27,6 +27,14 @@ const esc = (s) =>
 const copFormat = (cents) =>
   new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format((cents || 0) / 100);
 
+/**
+ * Número de rifa con ceros a la izquierda: 1 -> "001".
+ * En Colombia el ganador suele salir de las últimas 3 cifras de una lotería
+ * externa, así que "001" es un número distinto de "010" o "100".
+ * El ancho se deriva del máximo del rango (999 -> 3 dígitos, 99 -> 2).
+ */
+const padNum = (n, max) => String(n).padStart(String(max ?? 0).length, "0");
+
 function toast(msg, ok = true) {
   const t = $("#toast");
   t.textContent = msg;
@@ -325,7 +333,7 @@ VIEWS.panel = async (el) => {
         <div class="kv">
           <div><span class="k">Premio</span><span class="v">${esc(raffle.prize)}</span></div>
           <div><span class="k">Precio / número</span><span class="v">${copFormat(raffle.priceCents)}</span></div>
-          <div><span class="k">Rango</span><span class="v">${raffle.numberRange.min}–${raffle.numberRange.max}</span></div>
+          <div><span class="k">Rango</span><span class="v">${padNum(raffle.numberRange.min, raffle.numberRange.max)}–${raffle.numberRange.max}</span></div>
           <div><span class="k">Vendidos</span><span class="v">${sold} de ${total}</span></div>
           <div><span class="k">Estado</span><span class="v">${esc(raffle.status)}</span></div>
         </div>
@@ -364,8 +372,8 @@ VIEWS.rifas = async (el) => {
         <label>Premio<input name="prize" required placeholder="Moto 0km marca X" /></label>
         <label>Slug<input name="slug" required placeholder="sorteo-moto-2026" pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
         <label>Precio por número (COP)<input name="price" type="number" min="0" value="10000" required /></label>
-        <label>Número mínimo<input name="min" type="number" min="0" value="0" required /></label>
-        <label>Número máximo<input name="max" type="number" min="0" value="99" required /></label>
+        <label>Número mínimo<input name="min" type="number" min="0" value="1" required /></label>
+        <label>Número máximo<input name="max" type="number" min="0" value="999" required /></label>
         <label>Mínimo para sortear<input name="minSold" type="number" min="0" value="20" /></label>
         <label>Descripción<input name="description" placeholder="Opcional" /></label>
         <div class="form-actions"><button type="submit" class="btn-approve">Crear rifa</button></div>
@@ -417,30 +425,65 @@ VIEWS.rifas = async (el) => {
 };
 
 // --------------------------- Vista: Comprobantes ---------------------------
+let comprobantesTab = "PENDING";
+
 VIEWS.comprobantes = async (el) => {
   await checkHealth();
   if (!backendOnline) { el.innerHTML = backendBanner(); return; }
-  const { purchases } = await api(`/api/raffles/${cfg.raffleSlug}/purchases?status=PENDING`);
+  const [{ purchases }, raffles] = await Promise.all([
+    api(`/api/raffles/${cfg.raffleSlug}/purchases?status=${comprobantesTab}`),
+    api("/api/raffles"),
+  ]);
+  const max = raffles.raffles.find((r) => r.slug === cfg.raffleSlug)?.numberRange?.max ?? 0;
+  const esPend = comprobantesTab === "PENDING";
+
   el.innerHTML = `
-    <header class="topbar"><div><h1>Comprobantes</h1><p class="muted">Pendientes de aprobación · ${esc(cfg.raffleSlug)}</p></div></header>
+    <header class="topbar"><div><h1>Comprobantes</h1><p class="muted">${esc(cfg.raffleSlug)}</p></div></header>
     <section class="panel">
-      <p class="muted small">La imagen del comprobante es de acceso privado (nunca pública). Aprobar marca el número como vendido y publica el estado público.</p>
+      <div class="tabs">
+        <button class="tab ${esPend ? "tab-on" : ""}" data-tab="PENDING">Pendientes</button>
+        <button class="tab ${esPend ? "" : "tab-on"}" data-tab="APPROVED">Vendidos</button>
+      </div>
+      <p class="muted small">${esPend
+        ? "La imagen del comprobante es de acceso privado (nunca pública). Aprobar marca el número como vendido y publica el estado público."
+        : "Anular libera el número y lo quita del estado público. <b>No devuelve el dinero</b>: si se pagó con Wompi, la devolución se hace en su panel."}</p>
       <ul class="approvals">
-        ${purchases.length === 0 ? `<li class="muted">No hay comprobantes pendientes. 🎉</li>` : ""}
+        ${purchases.length === 0 ? `<li class="muted">${esPend ? "No hay comprobantes pendientes. 🎉" : "Aún no hay números vendidos."}</li>` : ""}
         ${purchases.map((p) => `
           <li class="approval" data-id="${esc(p.id)}">
             <div>
-              <div class="who">${esc(p.buyer)} · Número ${p.number}</div>
+              <div class="who">${esc(p.buyer)} · Número ${padNum(p.number, max)}</div>
               <div class="meta">${esc(p.method)} · ${p.contact?.phone ? esc(p.contact.phone) : "sin teléfono"} · ${new Date(p.purchasedAt).toLocaleString("es-CO")}</div>
               ${p.receiptUrl ? `<div class="meta">🧾 comprobante adjunto (privado)</div>` : ""}
             </div>
             <div class="actions">
-              <button class="btn-approve" data-approve="${esc(p.id)}">Aprobar</button>
-              <button class="btn-reject" data-reject="${esc(p.id)}">Rechazar</button>
+              ${esPend ? `
+                <button class="btn-approve" data-approve="${esc(p.id)}">Aprobar</button>
+                <button class="btn-reject" data-reject="${esc(p.id)}">Rechazar</button>
+              ` : `
+                <button class="btn-reject" data-void="${esc(p.id)}" data-num="${padNum(p.number, max)}">Anular venta</button>
+              `}
             </div>
           </li>`).join("")}
       </ul>
     </section>`;
+
+  el.querySelectorAll("[data-tab]").forEach((b) => {
+    b.onclick = () => { comprobantesTab = b.dataset.tab; render(); };
+  });
+
+  el.querySelectorAll("[data-void]").forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm(`¿Anular la venta del número ${b.dataset.num}?\n\nEl número volverá a estar libre y saldrá del estado público.\nOJO: esto NO devuelve el dinero.`)) return;
+      try {
+        const r = await api(`/api/purchases/${b.dataset.void}/void`, {
+          method: "POST", body: { reason: "Anulada por el administrador" },
+        });
+        toast(r.avisoReembolso || `Venta anulada · número ${b.dataset.num} liberado`, !r.avisoReembolso);
+        render();
+      } catch (e) { toast(e.message, false); }
+    };
+  });
 
   el.querySelectorAll("[data-approve]").forEach((b) => {
     b.onclick = async () => {
@@ -471,7 +514,7 @@ VIEWS.ganadores = async (el) => {
     ${winner ? `
       <section class="panel winner-panel">
         <h2>🏆 Ganador declarado</h2>
-        <div style="font-size:20px;font-weight:700">Número ${winner.number} — ${esc(winner.buyer)}</div>
+        <div style="font-size:20px;font-weight:700">Número ${padNum(winner.number, raffle.numberRange.max)} — ${esc(winner.buyer)}</div>
         <div class="muted">Verificado: ${new Date(winner.verifiedAt).toLocaleString("es-CO")}</div>
       </section>` : `
       <section class="panel">
@@ -498,7 +541,7 @@ VIEWS.ganadores = async (el) => {
     if (numRaw !== "") body.number = Number(numRaw);
     try {
       const d = await api(`/api/raffles/${cfg.raffleSlug}/draw`, { method: "POST", body });
-      toast(`Ganador: número ${d.winningNumber}`);
+      toast(`Ganador: número ${padNum(d.winningNumber, raffle.numberRange.max)}`);
       render();
     } catch (err) { toast(err.message, false); }
   };

@@ -100,6 +100,14 @@ h2 { font-size: 17px; margin-bottom: 14px; }
 .form-grid input:focus, .form-grid select:focus { outline: 2px solid rgba(124,58,237,0.35); border-color: var(--violet); }
 .form-actions { grid-column: 1 / -1; display: flex; gap: 10px; margin-top: 4px; }
 
+/* Pestañas */
+.tabs { display: flex; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+.tab {
+  background: none; color: var(--muted); border-radius: 8px 8px 0 0;
+  padding: 8px 16px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab-on { color: var(--violet); border-bottom-color: var(--violet); background: #f6f3fd; }
+
 /* Approvals */
 .approvals { list-style: none; display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .approval { display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }

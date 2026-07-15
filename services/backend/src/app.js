@@ -336,6 +336,25 @@ export async function handler(req, res) {
       return json(res, pub.published ? 200 : 502, pub.published ? pub : { ...pub, error: pub.reason });
     }
 
+    // POST /api/purchases/:id/void -> anula una venta aprobada y libera el numero.
+    if (M === "POST" && parts[0] === "api" && parts[1] === "purchases" && parts[3] === "void") {
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
+      const b = await readBody(req);
+      const p = await store.voidPurchase(parts[2], { reason: b.reason || "" });
+      await store.audit({
+        actor: user.email, action: "VOID_PURCHASE", entityType: "purchase", entityId: p.id,
+        after: { number: p.number, reason: b.reason || "" },
+      });
+      const pub = await maybePublish(store, p.slug);
+      return json(res, 200, {
+        purchaseId: p.id, number: p.number, status: p.status, published: pub.published,
+        // Anular NO mueve dinero: si se cobro por Wompi hay que devolverlo alli.
+        avisoReembolso: p.method === "WOMPI"
+          ? "Esta venta se pago con Wompi: anularla NO devuelve el dinero. Haz la devolucion desde el panel de Wompi."
+          : null,
+      });
+    }
+
     // Declarar ganador: solo ADMIN+ (un abierto aqui = cualquiera se auto-declara ganador).
     if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "draw") {
       const user = requireLevel(await requireAuth(req, store), "ADMIN");
