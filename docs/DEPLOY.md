@@ -19,7 +19,25 @@ webhook y se cierre el flujo de pago real.
 
 ---
 
-## 1. Base de datos (Neon)
+## 1. Base de datos (PostgreSQL)
+
+### Opción A — Desde Vercel (más simple)
+
+Vercel → tu proyecto → **Storage → Create Database → Postgres (Neon)** → *Connect*.
+Vercel inyecta automáticamente **`DATABASE_URL`** (ya con pooling y `sslmode=require`) en
+el proyecto: es exactamente la variable que lee el backend, no hay que copiar nada a mano.
+
+Luego aplica el esquema una vez (copia la cadena desde Storage → `.env.local`):
+
+```bash
+cd services/backend && npm install
+DATABASE_URL="postgres://...-pooler.../db?sslmode=require" npm run migrate
+```
+
+> El backend también aplica la migración al arrancar (es idempotente), así que este paso
+> es opcional; sirve para confirmar la conexión antes de desplegar.
+
+### Opción B — Neon directamente
 
 1. Crea un proyecto en Neon y una base, p. ej. `sorteos`.
 2. Copia la **cadena de conexión con pooling** (la que contiene `-pooler`). Serverless abre
@@ -40,6 +58,25 @@ El TLS se activa solo para hosts remotos (en `localhost` se desactiva).
 ---
 
 ## 2. Backend en Vercel
+
+### Opción A — Proyecto ya conectado a GitHub (recomendado)
+
+Si conectaste el repo desde el dashboard de Vercel, **el paso crítico es el Root Directory**:
+este repo es un monorepo y la raíz **no tiene `package.json`**, así que sin esto el deploy
+no construye nada.
+
+1. Vercel → tu proyecto → **Settings → General**
+   - **Root Directory** = `services/backend` → *Save*
+   - **Framework Preset** = `Other`
+2. **Settings → Environment Variables** → añade las de abajo (Production).
+3. **Deployments** → *Redeploy* (o haz un push).
+
+> **Cron y plan Hobby:** Vercel Hobby solo permite crons **una vez al día**; por eso
+> `vercel.json` usa `0 4 * * *`. No es crítico: `reserve()` recupera las reservas vencidas
+> de forma perezosa en la misma consulta SQL, así que un número expirado vuelve a estar
+> disponible al instante aunque el cron no haya corrido.
+
+### Opción B — Desde la CLI
 
 ```bash
 npm i -g vercel

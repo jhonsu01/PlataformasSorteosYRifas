@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "//": "Root Directory del proyecto Vercel debe ser services/backend. El cron corre 1 vez al dia por el limite del plan Hobby; no es critico: reserve() recupera de forma perezosa las reservas vencidas (ver store-postgres.js).",
   "functions": {
     "api/**": {
       "maxDuration": 15,
@@ -12,7 +13,7 @@
   "crons": [
     {
       "path": "/api/cron/expire",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 4 * * *"
     }
   ]
 }
