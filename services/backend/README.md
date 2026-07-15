@@ -32,11 +32,21 @@ compradores simultáneos nunca obtienen el mismo número.
 
 ### Probar contra PostgreSQL real
 
+Usamos el puerto **5433** para no chocar con un PostgreSQL ya instalado en la máquina
+(que suele ocupar el 5432):
+
 ```bash
-docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=sorteos_test \
-  -p 5432:5432 -d postgres:16
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/sorteos_test npm test
+docker run --rm --name sorteos-pg -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=sorteos_test -p 5433:5432 -d postgres:16
+DATABASE_URL=postgres://postgres:postgres@localhost:5433/sorteos_test npm test
 ```
+
+> ⚠️ Si el puerto ya está tomado por otro PostgreSQL, las conexiones se van a **ese**
+> servidor (no al contenedor) y verás `28P01: password authentication failed`.
+> Comprueba con `netstat -ano | findstr :5432`.
+>
+> Las pruebas ejecutan `TRUNCATE`, por lo que **abortan** si el nombre de la base no
+> contiene `test`. Nunca apuntes `DATABASE_URL` a una base real al correr `npm test`.
 
 El workflow de CI ejecuta estas pruebas contra un **PostgreSQL 16 real** en cada push
 (incluye una prueba que verifica que los datos sobreviven a un reinicio y otra de

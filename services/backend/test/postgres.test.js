@@ -24,7 +24,22 @@ const RAFFLE = {
   minSoldToDraw: 1,
 };
 
+// SALVAGUARDA: estas pruebas hacen TRUNCATE. Si DATABASE_URL apuntara por error a
+// una base real (p. ej. un PostgreSQL local ya instalado en el puerto por defecto),
+// se destruirian datos. Solo permitimos bases cuyo nombre indique que son de prueba.
+function assertTestDatabase(connString) {
+  const dbName = new URL(connString).pathname.replace(/^\//, "");
+  if (!/test/i.test(dbName)) {
+    throw new Error(
+      `Abortado por seguridad: DATABASE_URL apunta a la base "${dbName}", que no parece de pruebas ` +
+      `(el nombre debe contener "test"). Estas pruebas ejecutan TRUNCATE.`
+    );
+  }
+  return dbName;
+}
+
 async function freshStore() {
+  assertTestDatabase(URL_DB);
   const store = await createPostgresStore(URL_DB, { reserveMinutes: 15 });
   // Limpia el estado de pruebas previas.
   await store._pool.query("TRUNCATE tickets, purchases, draws, processed_events, audit_log, raffles CASCADE");
