@@ -9,7 +9,8 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { httpError, pseudonym } from "./store.js";
 
-const MIGRATION_URL = new URL("../../../infra/db/migrations/001_init.sql", import.meta.url);
+// La migracion vive junto al servicio para que viaje con el despliegue.
+const MIGRATION_URL = new URL("../migrations/001_init.sql", import.meta.url);
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
@@ -52,9 +53,19 @@ function mapPurchase(p) {
 
 export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } = {}) {
   const { default: pg } = await import("pg");
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
 
-  // Migracion idempotente al arrancar.
+  // Proveedores gestionados (Neon, Vercel Postgres) exigen TLS; en local no.
+  const isLocal = /@(localhost|127\.0\.0\.1|host\.docker\.internal)[:/]/.test(databaseUrl);
+  // En serverless conviene un pool pequeño: hay muchos contenedores concurrentes.
+  const defaultMax = isLocal ? 10 : 3;
+
+  const pool = new pg.Pool({
+    connectionString: databaseUrl,
+    max: Number(process.env.PG_POOL_MAX || defaultMax),
+    ssl: isLocal ? false : { rejectUnauthorized: process.env.PGSSL_NO_VERIFY !== "true" },
+  });
+
+  // Migracion idempotente al arrancar (CREATE TABLE IF NOT EXISTS).
   if (!fs.existsSync(MIGRATION_URL)) {
     throw new Error(`No se encontro la migracion: ${MIGRATION_URL.pathname}`);
   }

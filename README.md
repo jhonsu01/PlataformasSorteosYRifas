@@ -60,6 +60,9 @@ Usuario toca un número libre en el APK
 Configura la URL del backend desde el icono **⚙** de la app (no requiere recompilar).
 Sin backend configurado, la app funciona en modo consulta sobre el JSON público.
 
+Para que Wompi pueda enviar el webhook, el backend necesita una URL pública HTTPS:
+sigue [`docs/DEPLOY.md`](docs/DEPLOY.md) (Vercel + Neon + Wompi, paso a paso).
+
 ## 🔒 Privacidad por diseño
 
 El estado público (repo GitHub + web) **solo** contiene, por número vendido:

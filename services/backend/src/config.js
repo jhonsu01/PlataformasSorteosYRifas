@@ -11,6 +11,15 @@ export const config = {
   // Minutos que un numero queda RESERVED antes de liberarse si no hay pago.
   reserveMinutes: Number(process.env.RESERVE_MINUTES || 15),
 
+  // Siembra la rifa demo. Por defecto SOLO en modo memoria: con una base real
+  // (produccion) no se inyectan datos de ejemplo salvo que se pida explicitamente.
+  seedDemo: process.env.SEED_DEMO
+    ? process.env.SEED_DEMO === "true"
+    : !process.env.DATABASE_URL,
+
+  // Protege /api/cron/expire (Vercel Cron envia Authorization: Bearer <CRON_SECRET>).
+  cronSecret: process.env.CRON_SECRET || "",
+
   wompi: {
     env: process.env.WOMPI_ENV || "test", // test | prod
     publicKey: process.env.WOMPI_PUBLIC_KEY || "",
