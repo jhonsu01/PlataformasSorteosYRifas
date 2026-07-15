@@ -222,10 +222,16 @@ GitHub → Settings → Developer settings → **Fine-grained tokens** → *Gene
 ### 3) Variables en Vercel (Production)
 
 ```bash
-vercel env add GITHUB_TOKEN production          # el PAT fine-grained
+vercel env add GITHUB_RIFFLES_TOKEN production  # el PAT fine-grained
 vercel env add GITHUB_RIFFLES_OWNER production  # el nombre de la organización
 ```
-→ **Redeploy**. Comprueba con `/health`: `githubConfigured: true`.
+
+> ⚠️ **No la llames `GITHUB_TOKEN`.** En Vercel ese nombre **no llega** a la función
+> (comprobado: `GITHUB_RIFFLES_OWNER`, creada a la vez y en el mismo entorno, sí llegaba).
+> La plataforma trata `GITHUB_TOKEN` de forma especial. Usa `GITHUB_RIFFLES_TOKEN`.
+
+→ **Redeploy**. Comprueba con `/health`:
+`githubConfigured: true`, `githubTokenSet: true`, `githubOwner: "<tu-org>"`.
 
 ### 4) Publica
 

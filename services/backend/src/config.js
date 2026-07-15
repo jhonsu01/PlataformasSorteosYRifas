@@ -61,7 +61,12 @@ export const config = {
 
   github: {
     // PAT (o GitHub App) con contenido:write sobre los repos de rifas.
-    token: process.env.GITHUB_TOKEN || "",
+    //
+    // OJO: usa GITHUB_RIFFLES_TOKEN, no GITHUB_TOKEN. En Vercel se comprobo que
+    // GITHUB_TOKEN NO llega a la funcion (GITHUB_RIFFLES_OWNER, definida a la vez
+    // y en el mismo entorno, si llegaba): la plataforma trata ese nombre de forma
+    // especial. GITHUB_TOKEN se mantiene como fallback para otros entornos.
+    token: process.env.GITHUB_RIFFLES_TOKEN || process.env.GITHUB_TOKEN || "",
     // Cuenta personal (p. ej. "jhonsu01") u organizacion donde viven los repos
     // de cada rifa. GITHUB_RIFFLES_ORG se mantiene como alias antiguo.
     owner: process.env.GITHUB_RIFFLES_OWNER || process.env.GITHUB_RIFFLES_ORG || "",
