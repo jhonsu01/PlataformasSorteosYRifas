@@ -37,11 +37,18 @@ export const config = {
   },
 
   wompi: {
-    env: process.env.WOMPI_ENV || "test", // test | prod
+    // SOLO "test" o "prod". Nunca un secreto (ver wompiEnvValid).
+    env: (process.env.WOMPI_ENV || "test").trim(),
+
+    // Llave publica: pub_test_... / pub_prod_...  (segura de exponer)
     publicKey: process.env.WOMPI_PUBLIC_KEY || "",
-    // Llave privada de integridad (firma del checkout, lado servidor).
-    integrityKey: process.env.WOMPI_PRIVATE_KEY || "",
-    // Llave de eventos: verificacion del checksum del webhook.
+
+    // Secreto de INTEGRIDAD: test_integrity_... / prod_integrity_...
+    // OJO: NO es la "llave privada" prv_test_ de Wompi (esa es para su API REST).
+    // WOMPI_PRIVATE_KEY se mantiene como alias por compatibilidad.
+    integrityKey: process.env.WOMPI_INTEGRITY_SECRET || process.env.WOMPI_PRIVATE_KEY || "",
+
+    // Secreto de EVENTOS: test_events_... / prod_events_...  (verifica el webhook)
     eventsKey: process.env.WOMPI_EVENTS_KEY || "",
   },
 
@@ -56,3 +63,13 @@ export const config = {
 export function isGithubConfigured() {
   return Boolean(config.github.token && config.github.org);
 }
+
+/** WOMPI_ENV solo admite "test" o "prod". */
+export const wompiEnvValid = ["test", "prod"].includes(config.wompi.env);
+
+/**
+ * Valor de entorno seguro para exponer en /health.
+ * Nunca devuelve el contenido crudo de WOMPI_ENV: si alguien pega ahi un secreto
+ * por error, /health lo publicaria a internet (paso de verdad).
+ */
+export const safeWompiEnv = () => (wompiEnvValid ? config.wompi.env : "invalido");

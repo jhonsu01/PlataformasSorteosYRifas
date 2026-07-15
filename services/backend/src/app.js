@@ -6,7 +6,7 @@
 // serverless el contenedor se reutiliza entre invocaciones, asi que no se abre
 // un pool nuevo por request.
 
-import { config, jwtSecretIsEphemeral } from "./config.js";
+import { config, jwtSecretIsEphemeral, wompiEnvValid, safeWompiEnv } from "./config.js";
 import { createStore } from "./store.js";
 import { createPostgresStore } from "./store-postgres.js";
 import { verifyEventSignature, actionForStatus, integritySignature } from "./wompi.js";
@@ -47,6 +47,13 @@ export function getStore() {
           throw new Error("Falta JWT_ACCESS_SECRET. Es obligatorio cuando hay DATABASE_URL.");
         }
         console.warn("[backend] AVISO: JWT_ACCESS_SECRET no definido; usando secreto efimero (solo desarrollo).");
+      }
+      if (!wompiEnvValid) {
+        // No se imprime el valor: podria ser un secreto pegado por error.
+        console.error(
+          `[backend] ERROR: WOMPI_ENV invalido (largo ${config.wompi.env.length}). ` +
+          `Debe ser exactamente "test" o "prod". Si pegaste ahi un secreto de Wompi, ROTALO.`
+        );
       }
       if (config.seedDemo) await ensureDemo(store);
       return store;
@@ -135,9 +142,14 @@ export async function handler(req, res) {
       const store = await getStore();
       return json(res, 200, {
         ok: true,
-        env: config.wompi.env,
+        // Nunca el valor crudo: si WOMPI_ENV trae un secreto por error, /health
+        // lo publicaria a internet. Solo se expone "test" | "prod" | "invalido".
+        env: safeWompiEnv(),
+        envValid: wompiEnvValid,
         storage: store.kind,
         wompiConfigured: Boolean(config.wompi.publicKey),
+        wompiIntegrityConfigured: Boolean(config.wompi.integrityKey),
+        wompiEventsConfigured: Boolean(config.wompi.eventsKey),
         githubConfigured: Boolean(config.github.token && config.github.org),
       });
     }

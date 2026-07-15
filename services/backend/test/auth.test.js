@@ -161,3 +161,20 @@ test("los endpoints de administracion rechazan peticiones sin credenciales", asy
     assert.notEqual(ok.status, 403, `${m} ${p} deberia ser publico`);
   }
 });
+
+// --------------------------- Fuga por WOMPI_ENV ---------------------------
+// Regresion: un secreto de Wompi pegado por error en WOMPI_ENV se publicaba tal
+// cual en /health (paso en produccion). /health nunca debe devolver el valor crudo.
+test("/health no expone WOMPI_ENV crudo (evita filtrar un secreto mal puesto)", async (t) => {
+  const server = http.createServer(handler);
+  await new Promise((r) => server.listen(0, r));
+  t.after(() => server.close());
+
+  const r = await pedir(server, "GET", "/health");
+  assert.equal(r.status, 200);
+  assert.ok(["test", "prod", "invalido"].includes(r.body.env),
+    `env debe ser test|prod|invalido, fue: ${r.body.env}`);
+  assert.ok(!String(r.body.env).includes("integrity"), "no debe filtrar un secreto");
+  assert.ok(!String(r.body.env).includes("events"), "no debe filtrar un secreto");
+  assert.ok(String(r.body.env).length <= 8, "un valor largo delata un secreto");
+});

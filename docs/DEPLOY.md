@@ -88,15 +88,28 @@ vercel link           # crea/enlaza el proyecto
 Configura las variables (o desde el dashboard → Settings → Environment Variables):
 
 ```bash
-vercel env add JWT_ACCESS_SECRET production   # OBLIGATORIO (ver aviso abajo)
-vercel env add DATABASE_URL production        # la cadena -pooler de Neon
-vercel env add WOMPI_PUBLIC_KEY production    # pub_test_xxx
-vercel env add WOMPI_PRIVATE_KEY production   # prv_test_xxx  (firma de integridad)
-vercel env add WOMPI_EVENTS_KEY production    # evt_test_xxx  (verifica el webhook)
-vercel env add WOMPI_ENV production           # test
-vercel env add CRON_SECRET production         # cadena aleatoria (protege el cron)
-vercel env add PG_POOL_MAX production         # 3
+vercel env add JWT_ACCESS_SECRET production      # OBLIGATORIO (ver aviso abajo)
+vercel env add DATABASE_URL production           # la cadena -pooler de Neon
+vercel env add WOMPI_ENV production              # exactamente: test
+vercel env add WOMPI_PUBLIC_KEY production       # pub_test_...
+vercel env add WOMPI_INTEGRITY_SECRET production # test_integrity_...
+vercel env add WOMPI_EVENTS_KEY production       # test_events_...
+vercel env add CRON_SECRET production            # cadena aleatoria (protege el cron)
+vercel env add PG_POOL_MAX production            # 3
 ```
+
+### ⚠️ Las 4 llaves de Wompi no son intercambiables
+
+| Wompi te muestra | Va en | Para qué |
+| --- | --- | --- |
+| Llave pública `pub_test_…` | `WOMPI_PUBLIC_KEY` | abrir el checkout (es pública) |
+| Secreto de integridad `test_integrity_…` | `WOMPI_INTEGRITY_SECRET` | firmar el monto/referencia |
+| Secreto de eventos `test_events_…` | `WOMPI_EVENTS_KEY` | validar la firma del webhook |
+| Llave privada `prv_test_…` | *(no se usa)* | API REST de Wompi |
+
+`WOMPI_ENV` es **solo** `test` o `prod`. **Nunca pegues un secreto ahí**: además de romper la
+configuración, quedaría visible en `/health` y en la app Admin. Si te pasa, **rota ese secreto
+en Wompi**.
 
 Despliega:
 
