@@ -349,7 +349,11 @@ VIEWS.rifas = async (el) => {
             <div class="rifa-title">${esc(r.title)}</div>
             <div class="muted small">${esc(r.slug)} · ${esc(r.status)}</div>
             <div class="rifa-meta">${r.sold}/${r.total} vendidos · ${copFormat(r.priceCents)}</div>
-            <button class="btn-approve" data-sel="${esc(r.slug)}">${r.slug === cfg.raffleSlug ? "Activa" : "Seleccionar"}</button>
+            <div id="repo-${esc(r.slug)}" class="repo-line"></div>
+            <div class="rifa-acciones">
+              <button class="btn-approve" data-sel="${esc(r.slug)}">${r.slug === cfg.raffleSlug ? "Activa" : "Seleccionar"}</button>
+              <button class="btn-secondary" data-pub="${esc(r.slug)}">Publicar a GitHub</button>
+            </div>
           </div>`).join("")}
       </div>
     </section>
@@ -370,6 +374,22 @@ VIEWS.rifas = async (el) => {
 
   el.querySelectorAll("[data-sel]").forEach((b) => {
     b.onclick = () => { cfg.raffleSlug = b.dataset.sel; saveCfg(cfg); toast(`Rifa activa: ${b.dataset.sel}`); render(); };
+  });
+
+  el.querySelectorAll("[data-pub]").forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = "Publicando…";
+      try {
+        const r = await api(`/api/raffles/${b.dataset.pub}/publish`, { method: "POST" });
+        toast(`Publicado en ${r.repo}`);
+        const linea = document.getElementById(`repo-${b.dataset.pub}`);
+        if (linea && r.url) linea.innerHTML = `<a href="${esc(r.url)}" target="_blank" class="repo-link">📖 ${esc(r.repo)}</a>`;
+      } catch (e) {
+        toast(e.message, false);
+      } finally {
+        b.disabled = false; b.textContent = "Publicar a GitHub";
+      }
+    };
   });
 
   $("#form-rifa").onsubmit = async (e) => {

@@ -188,6 +188,65 @@ El webhook no lleva JWT: se autentica con la **firma de Wompi** (`WOMPI_EVENTS_K
 
 ---
 
+## 2.7. GitHub como fuente de verdad pública (Guía §8)
+
+Cada rifa vive en **su propio repositorio público**, y cada venta queda como un **commit**:
+el historial es la cronología del sorteo, verificable por cualquiera y que nadie puede
+reescribir sin dejar rastro. Es opcional — sin esto el backend sigue sirviendo el JSON
+por su API — pero es lo que hace auditable el sorteo.
+
+### 1) Crea una organización dedicada
+
+En GitHub → **New organization** → plan Free → nombre, p. ej. `sorteos-tuusuario`.
+
+> **Por qué una organización y no tu cuenta personal:** el token del backend queda
+> encerrado ahí. Si se filtrara, solo alcanza los repos de rifas — nunca tus otros
+> proyectos. Con un PAT clásico sobre la cuenta personal, un token filtrado da
+> escritura sobre **todos** tus repositorios.
+
+### 2) Crea un PAT fine-grained
+
+GitHub → Settings → Developer settings → **Fine-grained tokens** → *Generate new token*:
+
+| Campo | Valor |
+| --- | --- |
+| Resource owner | **la organización** (no tu usuario) |
+| Repository access | **All repositories** (para que cubra las rifas futuras) |
+| Repository permissions → **Contents** | Read and write |
+| Organization permissions → **Administration** | Read and write *(permite crear los repos)* |
+
+> Si prefieres no dar `Administration`, quita ese permiso y **crea cada repo de rifa a
+> mano** (público, con el mismo nombre que el slug). El backend detecta que ya existe y
+> solo escribe: te lo dirá en el error si no puede crearlo.
+
+### 3) Variables en Vercel (Production)
+
+```bash
+vercel env add GITHUB_TOKEN production          # el PAT fine-grained
+vercel env add GITHUB_RIFFLES_OWNER production  # el nombre de la organización
+```
+→ **Redeploy**. Comprueba con `/health`: `githubConfigured: true`.
+
+### 4) Publica
+
+En la app Admin → **Rifas** → botón **Publicar a GitHub** (o cualquier aprobación de pago
+publica automáticamente). El repo `<org>/<slug>` aparece con:
+
+```
+public/raffle.json    · configuración
+public/numbers.json   · números vendidos (seudonimizados)
+public/draw.json      · ganador (al declararlo)
+README.md
+```
+
+Y el JSON queda accesible sin backend:
+`https://raw.githubusercontent.com/<org>/<slug>/main/public/numbers.json`
+
+> Publicar es un **efecto secundario**: si GitHub falla, la venta ya cobrada NO se pierde.
+> El error se registra y puedes reintentar con el botón **Publicar a GitHub**.
+
+---
+
 ## 3. Registrar el webhook en Wompi
 
 En el panel de Wompi (modo test) → **Eventos / Webhooks**, registra:

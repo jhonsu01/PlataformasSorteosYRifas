@@ -60,15 +60,17 @@ export const config = {
   },
 
   github: {
-    // PAT fine-grained o token de GitHub App con contenido:write SOLO en repos de rifas.
+    // PAT (o GitHub App) con contenido:write sobre los repos de rifas.
     token: process.env.GITHUB_TOKEN || "",
-    org: process.env.GITHUB_RIFFLES_ORG || "",
+    // Cuenta personal (p. ej. "jhonsu01") u organizacion donde viven los repos
+    // de cada rifa. GITHUB_RIFFLES_ORG se mantiene como alias antiguo.
+    owner: process.env.GITHUB_RIFFLES_OWNER || process.env.GITHUB_RIFFLES_ORG || "",
     branch: process.env.GITHUB_RIFFLES_BRANCH || "main",
   },
 };
 
 export function isGithubConfigured() {
-  return Boolean(config.github.token && config.github.org);
+  return Boolean(config.github.token && config.github.owner);
 }
 
 /** WOMPI_ENV solo admite "test" o "prod". */

@@ -59,8 +59,15 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
   // En serverless conviene un pool pequeño: hay muchos contenedores concurrentes.
   const defaultMax = isLocal ? 10 : 3;
 
+  // Quitamos `sslmode` de la cadena y configuramos el TLS explicitamente aqui.
+  // Motivo: pg avisa de que en v9 los modos 'require'/'prefer' pasaran a la
+  // semantica de libpq, que es MAS DEBIL (hoy equivalen a verify-full). Al fijar
+  // `ssl` a mano, la verificacion no depende de ese cambio futuro (y desaparece
+  // el aviso que ensuciaba los logs en cada arranque en frio).
+  const conn = databaseUrl.replace(/([?&])sslmode=[^&]*(&|$)/, (_m, p1, p2) => (p2 === "&" ? p1 : ""));
+
   const pool = new pg.Pool({
-    connectionString: databaseUrl,
+    connectionString: conn,
     max: Number(process.env.PG_POOL_MAX || defaultMax),
     ssl: isLocal ? false : { rejectUnauthorized: process.env.PGSSL_NO_VERIFY !== "true" },
   });

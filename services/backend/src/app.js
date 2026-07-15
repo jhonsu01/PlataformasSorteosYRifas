@@ -6,7 +6,7 @@
 // serverless el contenedor se reutiliza entre invocaciones, asi que no se abre
 // un pool nuevo por request.
 
-import { config, jwtSecretIsEphemeral, wompiEnvValid, safeWompiEnv } from "./config.js";
+import { config, jwtSecretIsEphemeral, wompiEnvValid, safeWompiEnv, isGithubConfigured } from "./config.js";
 import { createStore } from "./store.js";
 import { createPostgresStore } from "./store-postgres.js";
 import { verifyEventSignature, actionForStatus, integritySignature } from "./wompi.js";
@@ -151,7 +151,7 @@ export async function handler(req, res) {
         wompiConfigured: Boolean(config.wompi.publicKey),
         wompiIntegrityConfigured: Boolean(config.wompi.integrityKey),
         wompiEventsConfigured: Boolean(config.wompi.eventsKey),
-        githubConfigured: Boolean(config.github.token && config.github.org),
+        githubConfigured: isGithubConfigured(),
       });
     }
 
@@ -303,6 +303,19 @@ export async function handler(req, res) {
       const p = await store.reject(parts[2], { reason: b.reason || "" });
       await store.audit({ actor: user.email, action: "REJECT_PURCHASE", entityType: "purchase", entityId: p.id, after: { number: p.number, reason: b.reason || "" } });
       return json(res, 200, { purchaseId: p.id, status: p.status });
+    }
+
+    // POST /api/raffles/:slug/publish -> fuerza la publicacion a GitHub.
+    // Util para sincronizar la primera vez o re-publicar tras un fallo, sin
+    // tener que esperar a que entre una venta.
+    if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "publish") {
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
+      const slug = parts[2];
+      await store.getRaffle(slug);
+      const pub = await maybePublish(store, slug);
+      await store.audit({ actor: user.email, action: "PUBLISH", entityType: "raffle", entityId: slug, after: { published: pub.published, repo: pub.repo } });
+      // 502 si GitHub rechazo: asi el admin ve el motivo en vez de un falso OK.
+      return json(res, pub.published ? 200 : 502, pub);
     }
 
     // Declarar ganador: solo ADMIN+ (un abierto aqui = cualquiera se auto-declara ganador).
