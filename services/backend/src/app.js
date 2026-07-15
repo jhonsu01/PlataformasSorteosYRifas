@@ -157,6 +157,17 @@ export async function handler(req, res) {
         // solo se reporta como booleano, nunca su valor.
         githubTokenSet: Boolean(config.github.token),
         githubOwner: config.github.owner || null,
+        // Forma del token, NUNCA su valor: permite ver si se pego truncado, con
+        // espacios, o si no es un PAT (un 401 de GitHub no dice cual de las tres).
+        githubTokenShape: config.github.token
+          ? {
+              prefijo: config.github.token.slice(0, 11),
+              largo: config.github.token.length,
+              teniaEspacios:
+                (process.env.GITHUB_RIFFLES_TOKEN || process.env.GITHUB_TOKEN || "").length !==
+                config.github.token.length,
+            }
+          : null,
       });
     }
 

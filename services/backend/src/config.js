@@ -48,15 +48,15 @@ export const config = {
     env: (process.env.WOMPI_ENV || "test").trim(),
 
     // Llave publica: pub_test_... / pub_prod_...  (segura de exponer)
-    publicKey: process.env.WOMPI_PUBLIC_KEY || "",
+    publicKey: (process.env.WOMPI_PUBLIC_KEY || "").trim(),
 
     // Secreto de INTEGRIDAD: test_integrity_... / prod_integrity_...
     // OJO: NO es la "llave privada" prv_test_ de Wompi (esa es para su API REST).
     // WOMPI_PRIVATE_KEY se mantiene como alias por compatibilidad.
-    integrityKey: process.env.WOMPI_INTEGRITY_SECRET || process.env.WOMPI_PRIVATE_KEY || "",
+    integrityKey: (process.env.WOMPI_INTEGRITY_SECRET || process.env.WOMPI_PRIVATE_KEY || "").trim(),
 
     // Secreto de EVENTOS: test_events_... / prod_events_...  (verifica el webhook)
-    eventsKey: process.env.WOMPI_EVENTS_KEY || "",
+    eventsKey: (process.env.WOMPI_EVENTS_KEY || "").trim(),
   },
 
   github: {
@@ -66,11 +66,14 @@ export const config = {
     // GITHUB_TOKEN NO llega a la funcion (GITHUB_RIFFLES_OWNER, definida a la vez
     // y en el mismo entorno, si llegaba): la plataforma trata ese nombre de forma
     // especial. GITHUB_TOKEN se mantiene como fallback para otros entornos.
-    token: process.env.GITHUB_RIFFLES_TOKEN || process.env.GITHUB_TOKEN || "",
+    // .trim() no es cosmetico: un salto de linea o espacio al pegar el valor en
+    // el panel viaja hasta la cabecera `Bearer <token>` y GitHub responde 401
+    // sin decir por que. Lo mismo con el owner en la URL.
+    token: (process.env.GITHUB_RIFFLES_TOKEN || process.env.GITHUB_TOKEN || "").trim(),
     // Cuenta personal (p. ej. "jhonsu01") u organizacion donde viven los repos
     // de cada rifa. GITHUB_RIFFLES_ORG se mantiene como alias antiguo.
-    owner: process.env.GITHUB_RIFFLES_OWNER || process.env.GITHUB_RIFFLES_ORG || "",
-    branch: process.env.GITHUB_RIFFLES_BRANCH || "main",
+    owner: (process.env.GITHUB_RIFFLES_OWNER || process.env.GITHUB_RIFFLES_ORG || "").trim(),
+    branch: (process.env.GITHUB_RIFFLES_BRANCH || "main").trim(),
   },
 };
 
