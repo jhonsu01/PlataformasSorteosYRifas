@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "migrate": "node src/migrate.js",
-    "create-admin": "node src/create-admin.js",
+    "create-admin": "node --env-file-if-exists=.env.local src/create-admin.js",
     "test": "node --test"
   },
   "dependencies": {
