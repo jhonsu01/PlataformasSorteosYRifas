@@ -112,18 +112,30 @@ function cerrarSesion() {
 }
 
 let backendOnline = false;
-async function checkHealth() {
+/**
+ * Comprueba /health. Acepta `urlOverride` para poder probar una URL AÚN NO
+ * guardada (el botón "Probar conexión" de Configuración).
+ * No usa api(): /health es público y no debe disparar el refresh de sesión.
+ */
+async function checkHealth(urlOverride) {
   const badge = $("#conn-badge");
+  const base = String(urlOverride || cfg.backendUrl || "").replace(/\/$/, "");
   try {
-    const h = await api("/health");
+    const r = await fetch(base + "/health");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const h = await r.json();
     backendOnline = true;
-    badge.textContent = `● Backend conectado (${h.env})`;
-    badge.className = "conn conn-on";
+    if (badge) {
+      badge.textContent = `● Backend conectado (${h.env})`;
+      badge.className = "conn conn-on";
+    }
     return h;
   } catch {
     backendOnline = false;
-    badge.textContent = "● Backend no conectado";
-    badge.className = "conn conn-off";
+    if (badge) {
+      badge.textContent = "● Backend no conectado";
+      badge.className = "conn conn-off";
+    }
     return null;
   }
 }
@@ -490,7 +502,7 @@ VIEWS.config = async (el) => {
       </form>
       <div class="status-line">
         Estado: <b>${backendOnline ? "conectado" : "sin conexión"}</b>
-        ${h ? ` · entorno Wompi: <b>${esc(h.env)}</b> · GitHub: <b>${h.githubConfigured ? "configurado" : "no configurado"}</b>` : ""}
+        ${h ? ` · almacenamiento: <b>${esc(h.storage)}</b> · Wompi: <b>${h.wompiConfigured ? "configurado" : "sin llaves"}</b> · GitHub: <b>${h.githubConfigured ? "configurado" : "no configurado"}</b>` : ""}
       </div>
     </section>
     <section class="panel">
@@ -511,9 +523,18 @@ VIEWS.config = async (el) => {
     render();
   };
   $("#btn-test").onclick = async () => {
-    const ok = await checkHealth();
-    toast(ok ? "Conexión exitosa" : "No se pudo conectar al backend", Boolean(ok));
-    render();
+    // Prueba lo que está ESCRITO, no lo guardado, y sin re-renderizar
+    // (render() borraria lo que el usuario acaba de teclear).
+    const escrito = $("#form-cfg").backendUrl.value.trim();
+    const h = await checkHealth(escrito);
+    const linea = $(".status-line");
+    if (h) {
+      toast(`Conexión exitosa · almacenamiento: ${h.storage}`);
+      if (linea) linea.innerHTML = `Estado: <b>conectado</b> · entorno Wompi: <b>${esc(h.env)}</b> · almacenamiento: <b>${esc(h.storage)}</b>`;
+    } else {
+      toast(`No se pudo conectar a ${escrito}`, false);
+      if (linea) linea.innerHTML = `Estado: <b>sin conexión</b> — revisa la URL y pulsa Guardar si la cambiaste.`;
+    }
   };
 };
 
