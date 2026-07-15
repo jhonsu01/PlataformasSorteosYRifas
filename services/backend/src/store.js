@@ -111,6 +111,12 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     t.purchaseId = null;
   }
 
+  function getPurchase(purchaseId) {
+    const p = purchases.get(purchaseId);
+    if (!p) throw httpError(404, "Compra no encontrada");
+    return p;
+  }
+
   function attachReceipt(purchaseId, receiptUrl) {
     const p = purchases.get(purchaseId);
     if (!p) throw httpError(404, "Compra no encontrada");
@@ -275,10 +281,12 @@ export function createStore({ reserveMinutes = 15 } = {}) {
   }
 
   return {
-    createRaffle, getRaffle, reserve, attachReceipt, approve, reject, markSold,
+    kind: "memory",
+    createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,
+    close: async () => {},
     _raffles: raffles, _tickets: tickets, _purchases: purchases,
   };
 }

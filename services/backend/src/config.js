@@ -4,6 +4,10 @@
 export const config = {
   port: Number(process.env.PORT || 8787),
 
+  // Si esta definida, el backend persiste en PostgreSQL; si no, usa memoria
+  // (util para demo/desarrollo, pero se pierde al reiniciar).
+  databaseUrl: process.env.DATABASE_URL || "",
+
   // Minutos que un numero queda RESERVED antes de liberarse si no hay pago.
   reserveMinutes: Number(process.env.RESERVE_MINUTES || 15),
 

@@ -15,6 +15,10 @@ val appVersionCode = ((project.findProperty("appVersionCode") as String?) ?: "1"
 val rawBase = (project.findProperty("rawBase") as String?)
     ?: "https://raw.githubusercontent.com/jhonsu01/PlataformasSorteosYRifas/main/examples/sorteo-demo/public"
 
+// URL del backend por defecto (para comprar). Vacia = solo consulta; el usuario
+// puede fijarla desde los ajustes (⚙) de la app sin recompilar.
+val backendBase = (project.findProperty("backendBase") as String?) ?: ""
+
 android {
     namespace = "com.sorteosyrifas.cliente"
     compileSdk = 35
@@ -26,6 +30,7 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         buildConfigField("String", "RAW_BASE", "\"$rawBase\"")
+        buildConfigField("String", "BACKEND_BASE", "\"$backendBase\"")
     }
 
     // Firma de release: si hay keystore (CI), firma de verdad; si no, usa la de debug

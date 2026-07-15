@@ -46,6 +46,20 @@ PlataformasSorteosYRifas/
 
 ---
 
+## 💳 Flujo de compra (APK → Wompi → webhook)
+
+```
+Usuario toca un número libre en el APK
+   └→ Backend reserva el número (atómico) y firma la referencia (HMAC integridad)
+        └→ APK abre el Checkout de Wompi en un WebView
+             └→ Wompi cobra y redirige (el APK detecta el retorno)
+                  └→ Wompi envía el webhook al backend → firma verificada → número VENDIDO
+                       └→ Se publica el estado público → web y apps lo reflejan
+```
+
+Configura la URL del backend desde el icono **⚙** de la app (no requiere recompilar).
+Sin backend configurado, la app funciona en modo consulta sobre el JSON público.
+
 ## 🔒 Privacidad por diseño
 
 El estado público (repo GitHub + web) **solo** contiene, por número vendido:
@@ -81,7 +95,7 @@ El versionado se lleva en [`VERSION`](VERSION) y en los tags de git (fuente de v
 | APK | JDK 17, Android SDK 35 | `cd apps/android && gradle assembleRelease` |
 | MSI | Rust, Node 20, WebView2 | `cd apps/admin-windows && npm install && npm run tauri build` |
 | Web | Node 20 | `cd apps/web && npm install && npm run dev` |
-| Backend | Node 20 (sin dependencias) | `cd services/backend && npm start` · `npm test` |
+| Backend | Node 20 (+ PostgreSQL opcional) | `cd services/backend && npm install && npm start` |
 
 > El APK sin keystore se firma con la clave de debug (instalable). Para releases firmadas,
 > el workflow usa los secretos `ANDROID_KEYSTORE_*` del repositorio.

@@ -1,20 +1,46 @@
 # Backend — Sorteos y Rifas
 
-API del framework (Node, **sin dependencias**: `http` + `crypto` nativos). Implementa
-reservas atómicas, webhook de Wompi con verificación de firma, aprobación manual de
-comprobantes y un publicador *privacy-safe* hacia GitHub. Store en memoria (reemplazable
-por PostgreSQL en producción).
-
-> Estado: **MVP funcional**. Ejecutable y probado (`npm test`). El store en memoria y el
-> push a GitHub son adaptables a DB real + GitHub App en las siguientes fases.
+API del framework (Node). Implementa reservas atómicas, webhook de Wompi con verificación
+de firma, aprobación manual de comprobantes y un publicador *privacy-safe* hacia GitHub.
+Persiste en **PostgreSQL** o, si no hay base configurada, en memoria (demo).
 
 ## Ejecutar
 
 ```bash
 cd services/backend
+npm install
 npm start          # http://localhost:8787  (siembra la rifa "sorteo-demo")
-npm test           # 6 pruebas: privacidad, reserva atómica, ganador, firma Wompi
+npm test           # pruebas de memoria (+ PostgreSQL si hay DATABASE_URL)
 ```
+
+## Persistencia
+
+| `DATABASE_URL` | Almacenamiento | Sobrevive reinicios |
+| --- | --- | --- |
+| definida | **PostgreSQL** | ✅ Sí |
+| vacía | memoria | ❌ No (solo demo) |
+
+```bash
+# Con PostgreSQL (las migraciones se aplican solas al arrancar)
+DATABASE_URL=postgres://user:pass@host:5432/sorteos npm start
+```
+
+El esquema vive en [`infra/db/migrations/001_init.sql`](../../infra/db/migrations/001_init.sql)
+y se aplica de forma **idempotente** al iniciar. La reserva de un número es atómica
+(`UPDATE tickets ... WHERE status='FREE'` dentro de una transacción), por lo que dos
+compradores simultáneos nunca obtienen el mismo número.
+
+### Probar contra PostgreSQL real
+
+```bash
+docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=sorteos_test \
+  -p 5432:5432 -d postgres:16
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/sorteos_test npm test
+```
+
+El workflow de CI ejecuta estas pruebas contra un **PostgreSQL 16 real** en cada push
+(incluye una prueba que verifica que los datos sobreviven a un reinicio y otra de
+reservas concurrentes donde solo una gana).
 
 ## Endpoints
 
