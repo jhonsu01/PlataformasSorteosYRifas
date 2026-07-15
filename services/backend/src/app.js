@@ -320,7 +320,9 @@ export async function handler(req, res) {
       const pub = await maybePublish(store, slug);
       await store.audit({ actor: user.email, action: "PUBLISH", entityType: "raffle", entityId: slug, after: { published: pub.published, repo: pub.repo } });
       // 502 si GitHub rechazo: asi el admin ve el motivo en vez de un falso OK.
-      return json(res, pub.published ? 200 : 502, pub);
+      // `error` va ademas de `reason` porque el cliente lee `error` para el mensaje;
+      // sin esto la app solo mostraba "HTTP 502" sin decir que paso.
+      return json(res, pub.published ? 200 : 502, pub.published ? pub : { ...pub, error: pub.reason });
     }
 
     // Declarar ganador: solo ADMIN+ (un abierto aqui = cualquiera se auto-declara ganador).
