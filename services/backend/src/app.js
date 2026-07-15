@@ -152,6 +152,11 @@ export async function handler(req, res) {
         wompiIntegrityConfigured: Boolean(config.wompi.integrityKey),
         wompiEventsConfigured: Boolean(config.wompi.eventsKey),
         githubConfigured: isGithubConfigured(),
+        // Diagnostico: distingue "falta el token" de "falta el owner". El nombre
+        // de la organizacion NO es secreto (sus repos son publicos); el token
+        // solo se reporta como booleano, nunca su valor.
+        githubTokenSet: Boolean(config.github.token),
+        githubOwner: config.github.owner || null,
       });
     }
 
