@@ -614,6 +614,43 @@ private fun NumberCell(etiqueta: String, sold: Sold?, isWinner: Boolean, onClick
 }
 
 @Composable
+private fun PurchaseDialog(
+    etiqueta: String, priceCents: Long,
+    onDismiss: () -> Unit, onConfirm: (String, String, String) -> Unit,
+) {
+    var first by remember { mutableStateOf("") }
+    var last by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Comprar número $etiqueta") },
+        text = {
+            Column {
+                Text("Precio: ${formatCop(priceCents)}", fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Solo se publicará tu nombre y la inicial del apellido.",
+                    fontSize = 11.sp, color = Color.Gray,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(first, { first = it }, label = { Text("Nombre") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(last, { last = it }, label = { Text("Apellido") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(phone, { phone = it }, label = { Text("Teléfono") }, singleLine = true)
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = first.isNotBlank() && last.isNotBlank(),
+                onClick = { onConfirm(first.trim(), last.trim(), phone.trim()) },
+            ) { Text("Ir a pagar") }
+        },
+        dismissButton = { TextButton(onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
 private fun SettingsDialog(backendBase: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var b by remember { mutableStateOf(backendBase) }
     AlertDialog(
