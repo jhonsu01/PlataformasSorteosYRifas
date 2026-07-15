@@ -1,13 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/**": {
+    "api/index.js": {
       "maxDuration": 15,
       "includeFiles": "migrations/**"
     }
   },
   "rewrites": [
-    { "source": "/health", "destination": "/api/health" }
+    { "source": "/(.*)", "destination": "/api/index?__path=/$1" }
   ],
   "crons": [
     {

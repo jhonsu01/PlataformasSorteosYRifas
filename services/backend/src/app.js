@@ -110,11 +110,16 @@ export async function handler(req, res) {
     if (req.method === "OPTIONS") { cors(res); res.writeHead(204); return res.end(); }
 
     const url = new URL(req.url, "http://localhost");
-    const parts = url.pathname.split("/").filter(Boolean);
+    // Ruta efectiva: en Vercel el rewrite manda todo a /api/index y pasa la ruta
+    // original en `__path`; en local (http.Server) req.url ya es la ruta real.
+    // Resolverlo asi funciona en ambos entornos sin depender de como Vercel
+    // reescriba req.url.
+    const pathname = url.searchParams.get("__path") || url.pathname;
+    const parts = pathname.split("/").filter(Boolean);
     const M = req.method;
 
     // /health y /api/health
-    if (M === "GET" && (url.pathname === "/health" || url.pathname === "/api/health")) {
+    if (M === "GET" && (pathname === "/health" || pathname === "/api/health")) {
       const store = await getStore();
       return json(res, 200, {
         ok: true,
