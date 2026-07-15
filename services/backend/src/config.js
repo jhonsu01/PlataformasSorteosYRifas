@@ -1,6 +1,14 @@
 // Configuracion desde variables de entorno. Los secretos NUNCA se hardcodean
 // (ver .env.example). Todo tiene un default seguro para modo demo/test.
 
+import crypto from "node:crypto";
+
+// Sin JWT_ACCESS_SECRET usamos uno efimero (solo desarrollo). Se marca para que
+// el arranque avise/falle en produccion: en serverless cada contenedor generaria
+// un secreto distinto y las sesiones se caerian sin explicacion.
+const ephemeralJwtSecret = crypto.randomBytes(32).toString("hex");
+export const jwtSecretIsEphemeral = !process.env.JWT_ACCESS_SECRET;
+
 export const config = {
   port: Number(process.env.PORT || 8787),
 
@@ -19,6 +27,14 @@ export const config = {
 
   // Protege /api/cron/expire (Vercel Cron envia Authorization: Bearer <CRON_SECRET>).
   cronSecret: process.env.CRON_SECRET || "",
+
+  jwt: {
+    // Sin secreto configurado se genera uno aleatorio por proceso: en serverless
+    // eso invalida las sesiones en cada arranque en frio -> obligatorio en produccion.
+    accessSecret: process.env.JWT_ACCESS_SECRET || ephemeralJwtSecret,
+    accessTtl: Number(process.env.JWT_ACCESS_TTL || 900), // 15 min
+    refreshTtl: Number(process.env.JWT_REFRESH_TTL || 60 * 60 * 24 * 30), // 30 dias
+  },
 
   wompi: {
     env: process.env.WOMPI_ENV || "test", // test | prod

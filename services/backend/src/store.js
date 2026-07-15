@@ -280,13 +280,70 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     return freed;
   }
 
+  // ------------------------------------------------------------------
+  // Autenticacion / autorizacion (equivalente en memoria)
+  // ------------------------------------------------------------------
+  const admins = new Map();        // id -> user
+  const adminsByEmail = new Map(); // email -> id
+  const refreshTokens = new Map(); // tokenHash -> { userId, expiresAt, revokedAt }
+  const auditEntries = [];
+
+  const countAdmins = () => admins.size;
+
+  function createAdmin({ email, passwordHash, role = "ADMIN" }) {
+    const mail = String(email).toLowerCase().trim();
+    if (adminsByEmail.has(mail)) throw httpError(409, "Ya existe un administrador con ese correo");
+    const id = crypto.randomUUID();
+    const user = { id, email: mail, passwordHash, totpSecret: null, totpEnabled: false, role, lastLoginAt: null };
+    admins.set(id, user);
+    adminsByEmail.set(mail, id);
+    return user;
+  }
+
+  const getAdminByEmail = (email) => admins.get(adminsByEmail.get(String(email || "").toLowerCase().trim())) || null;
+  const getAdminById = (id) => admins.get(id) || null;
+
+  function setAdminTotp(id, secret, enabled) {
+    const u = admins.get(id);
+    if (!u) throw httpError(404, "Administrador no encontrado");
+    u.totpSecret = secret;
+    u.totpEnabled = enabled;
+    return u;
+  }
+
+  function touchAdminLogin(id) {
+    const u = admins.get(id);
+    if (u) u.lastLoginAt = new Date().toISOString();
+  }
+
+  function saveRefreshToken(tokenHash, userId, expiresAt) {
+    refreshTokens.set(tokenHash, { userId, expiresAt: new Date(expiresAt), revokedAt: null });
+  }
+
+  function getRefreshToken(tokenHash) {
+    const t = refreshTokens.get(tokenHash);
+    if (!t || t.revokedAt || t.expiresAt < new Date()) return null;
+    return { tokenHash, userId: t.userId };
+  }
+
+  function revokeRefreshToken(tokenHash) {
+    const t = refreshTokens.get(tokenHash);
+    if (t) t.revokedAt = new Date();
+  }
+
+  function audit(entry) {
+    auditEntries.push({ ...entry, createdAt: new Date().toISOString() });
+  }
+
   return {
     kind: "memory",
     createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,
+    countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
+    saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,
     close: async () => {},
-    _raffles: raffles, _tickets: tickets, _purchases: purchases,
+    _raffles: raffles, _tickets: tickets, _purchases: purchases, _audit: auditEntries,
   };
 }

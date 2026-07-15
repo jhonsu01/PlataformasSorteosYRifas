@@ -109,6 +109,42 @@ button { border: none; border-radius: 9px; padding: 9px 16px; font-size: 13px; f
 .btn-secondary { background: #eef2ff; color: #3730a3; }
 button:hover { filter: brightness(1.05); }
 
+/* Login */
+.login-wrap { display: grid; place-items: center; min-height: calc(100vh - 56px); }
+.login-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+  padding: 34px 30px; width: 380px; text-align: center;
+  box-shadow: 0 10px 40px rgba(124, 58, 237, 0.08);
+}
+.login-brand {
+  width: 56px; height: 56px; border-radius: 16px; margin: 0 auto 14px;
+  background: linear-gradient(160deg, var(--violet), var(--pink));
+  display: grid; place-items: center; font-size: 28px;
+}
+.login-card h1 { font-size: 21px; }
+.fld { display: flex; flex-direction: column; gap: 6px; text-align: left; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+.fld input {
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px;
+  font-size: 14px; font-family: inherit; color: var(--ink);
+}
+.fld input:focus { outline: 2px solid rgba(124,58,237,0.35); border-color: var(--violet); }
+.btn-link { background: none; color: var(--violet); margin-top: 14px; text-decoration: underline; padding: 4px; }
+
+/* Secreto TOTP */
+.secret-box {
+  font-family: Consolas, "Courier New", monospace; font-size: 17px; letter-spacing: 1px;
+  background: #f3f0fb; border: 1px dashed var(--violet); border-radius: 10px;
+  padding: 14px; margin: 10px 0; user-select: all; word-break: break-all;
+}
+
+/* Usuario en la barra lateral */
+.user-box { border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px; }
+.user-mail { font-size: 12px; font-weight: 600; word-break: break-all; }
+.user-role { font-size: 11px; opacity: 0.85; margin-bottom: 8px; }
+.btn-logout {
+  background: rgba(255,255,255,0.18); color: #fff; font-size: 12px; padding: 6px 10px; width: 100%;
+}
+
 /* Toast */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);

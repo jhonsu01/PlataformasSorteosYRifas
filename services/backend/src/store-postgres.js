@@ -9,8 +9,8 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { httpError, pseudonym } from "./store.js";
 
-// La migracion vive junto al servicio para que viaje con el despliegue.
-const MIGRATION_URL = new URL("../migrations/001_init.sql", import.meta.url);
+// Las migraciones viven junto al servicio para que viajen con el despliegue.
+const MIGRATIONS_DIR = new URL("../migrations/", import.meta.url);
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
@@ -65,11 +65,12 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
     ssl: isLocal ? false : { rejectUnauthorized: process.env.PGSSL_NO_VERIFY !== "true" },
   });
 
-  // Migracion idempotente al arrancar (CREATE TABLE IF NOT EXISTS).
-  if (!fs.existsSync(MIGRATION_URL)) {
-    throw new Error(`No se encontro la migracion: ${MIGRATION_URL.pathname}`);
+  // Migraciones idempotentes al arrancar, en orden alfabetico (001_, 002_, ...).
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+  if (!files.length) throw new Error(`Sin migraciones en ${MIGRATIONS_DIR.pathname}`);
+  for (const f of files) {
+    await pool.query(fs.readFileSync(new URL(f, MIGRATIONS_DIR), "utf8"));
   }
-  await pool.query(fs.readFileSync(MIGRATION_URL, "utf8"));
 
   const q = (text, params) => pool.query(text, params);
 
@@ -333,6 +334,84 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
     });
   }
 
+  // ------------------------------------------------------------------
+  // Autenticacion / autorizacion
+  // ------------------------------------------------------------------
+  const mapAdmin = (u) => u && ({
+    id: u.id, email: u.email, passwordHash: u.password_hash,
+    totpSecret: u.totp_secret, totpEnabled: u.totp_enabled,
+    role: u.role, lastLoginAt: iso(u.last_login_at),
+  });
+
+  async function countAdmins() {
+    const { rows } = await q(`SELECT count(*)::int AS c FROM admin_users`);
+    return rows[0].c;
+  }
+
+  async function createAdmin({ email, passwordHash, role = "ADMIN" }) {
+    const id = crypto.randomUUID();
+    const { rows } = await q(
+      `INSERT INTO admin_users (id, email, password_hash, role) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (email) DO NOTHING RETURNING *`,
+      [id, String(email).toLowerCase().trim(), passwordHash, role]
+    );
+    if (!rows.length) throw httpError(409, "Ya existe un administrador con ese correo");
+    return mapAdmin(rows[0]);
+  }
+
+  async function getAdminByEmail(email) {
+    const { rows } = await q(`SELECT * FROM admin_users WHERE email=$1`, [String(email || "").toLowerCase().trim()]);
+    return rows.length ? mapAdmin(rows[0]) : null;
+  }
+
+  async function getAdminById(id) {
+    const { rows } = await q(`SELECT * FROM admin_users WHERE id=$1`, [id]);
+    return rows.length ? mapAdmin(rows[0]) : null;
+  }
+
+  async function setAdminTotp(id, secret, enabled) {
+    const { rows } = await q(
+      `UPDATE admin_users SET totp_secret=$2, totp_enabled=$3 WHERE id=$1 RETURNING *`,
+      [id, secret, enabled]
+    );
+    if (!rows.length) throw httpError(404, "Administrador no encontrado");
+    return mapAdmin(rows[0]);
+  }
+
+  async function touchAdminLogin(id) {
+    await q(`UPDATE admin_users SET last_login_at=now() WHERE id=$1`, [id]);
+  }
+
+  async function saveRefreshToken(tokenHash, userId, expiresAt) {
+    await q(
+      `INSERT INTO refresh_tokens (token_hash, user_id, expires_at) VALUES ($1,$2,$3)`,
+      [tokenHash, userId, expiresAt]
+    );
+  }
+
+  /** Devuelve el token solo si existe, no fue revocado y no expiro. */
+  async function getRefreshToken(tokenHash) {
+    const { rows } = await q(
+      `SELECT * FROM refresh_tokens
+        WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now()`,
+      [tokenHash]
+    );
+    return rows.length ? { tokenHash: rows[0].token_hash, userId: rows[0].user_id } : null;
+  }
+
+  async function revokeRefreshToken(tokenHash) {
+    await q(`UPDATE refresh_tokens SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL`, [tokenHash]);
+  }
+
+  async function audit({ actor = null, action, entityType = null, entityId = null, before = null, after = null }) {
+    await q(
+      `INSERT INTO audit_log (actor, action, entity_type, entity_id, before, after)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [actor, action, entityType, entityId ? String(entityId) : null,
+       before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null]
+    );
+  }
+
   async function close() { await pool.end(); }
 
   return {
@@ -340,6 +419,9 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
     createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
-    listRaffles, adminPurchases, close, _pool: pool,
+    listRaffles, adminPurchases,
+    countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
+    saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,
+    close, _pool: pool,
   };
 }

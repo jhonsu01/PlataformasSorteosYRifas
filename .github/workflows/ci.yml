@@ -61,4 +61,6 @@ jobs:
         working-directory: services/backend
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sorteos_test
+          # Valor de prueba: con DATABASE_URL el backend exige un secreto real.
+          JWT_ACCESS_SECRET: secreto-solo-para-ci-no-usar-en-produccion
         run: npm test

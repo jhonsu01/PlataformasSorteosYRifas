@@ -6,11 +6,15 @@
 // serverless el contenedor se reutiliza entre invocaciones, asi que no se abre
 // un pool nuevo por request.
 
-import { config } from "./config.js";
+import { config, jwtSecretIsEphemeral } from "./config.js";
 import { createStore } from "./store.js";
 import { createPostgresStore } from "./store-postgres.js";
 import { verifyEventSignature, actionForStatus, integritySignature } from "./wompi.js";
 import { publishPublicState } from "./publisher.js";
+import {
+  login, refreshSession, logout, requireAuth, requireLevel,
+  setupTotp, enableTotp, publicUser,
+} from "./auth.js";
 
 const DEMO = {
   slug: "sorteo-demo",
@@ -36,6 +40,14 @@ export function getStore() {
         ? await createPostgresStore(config.databaseUrl, { reserveMinutes: config.reserveMinutes })
         : createStore({ reserveMinutes: config.reserveMinutes });
       console.log(`[backend] almacenamiento: ${store.kind}${store.kind === "memory" ? " (sin persistencia)" : ""}`);
+      if (jwtSecretIsEphemeral) {
+        if (config.databaseUrl) {
+          // Con base real esto es produccion: un secreto por contenedor tumbaria
+          // las sesiones de forma intermitente e inexplicable.
+          throw new Error("Falta JWT_ACCESS_SECRET. Es obligatorio cuando hay DATABASE_URL.");
+        }
+        console.warn("[backend] AVISO: JWT_ACCESS_SECRET no definido; usando secreto efimero (solo desarrollo).");
+      }
       if (config.seedDemo) await ensureDemo(store);
       return store;
     })();
@@ -143,11 +155,47 @@ export async function handler(req, res) {
 
     const store = await getStore();
 
+    // ---------------- Autenticacion ----------------
+    if (parts[0] === "api" && parts[1] === "auth") {
+      if (M === "POST" && parts[2] === "login") {
+        const b = await readBody(req);
+        try {
+          return json(res, 200, await login(store, b));
+        } catch (e) {
+          // Distingue "falta el 2FA" de "credenciales malas" sin revelar cual.
+          if (e.totpRequired) return json(res, 401, { error: e.message, totpRequired: true });
+          throw e;
+        }
+      }
+      if (M === "POST" && parts[2] === "refresh") {
+        const b = await readBody(req);
+        return json(res, 200, await refreshSession(store, b.refreshToken));
+      }
+      if (M === "POST" && parts[2] === "logout") {
+        const b = await readBody(req);
+        return json(res, 200, await logout(store, b.refreshToken));
+      }
+      if (M === "GET" && parts[2] === "me") {
+        const user = await requireAuth(req, store);
+        return json(res, 200, { user: publicUser(user) });
+      }
+      if (M === "POST" && parts[2] === "totp" && parts[3] === "setup") {
+        const user = await requireAuth(req, store);
+        return json(res, 200, await setupTotp(store, user));
+      }
+      if (M === "POST" && parts[2] === "totp" && parts[3] === "enable") {
+        const user = await requireAuth(req, store);
+        const b = await readBody(req);
+        return json(res, 200, await enableTotp(store, user, b.code));
+      }
+    }
+
     if (M === "GET" && parts[0] === "api" && parts[1] === "raffles" && parts.length === 2) {
       return json(res, 200, { raffles: await store.listRaffles() });
     }
 
     if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts.length === 2) {
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
       const b = await readBody(req);
       if (!b.slug || !SLUG_RE.test(b.slug)) return json(res, 400, { error: "slug invalido (usa minusculas-con-guiones)" });
       if (!b.title || !b.prize) return json(res, 400, { error: "title y prize requeridos" });
@@ -162,6 +210,7 @@ export async function handler(req, res) {
         endsAt: b.endsAt || new Date(Date.now() + 30 * 864e5).toISOString(),
         minSoldToDraw: Number(b.minSoldToDraw || 0), status: "ACTIVE",
       });
+      await store.audit({ actor: user.email, action: "CREATE_RAFFLE", entityType: "raffle", entityId: raffle.slug, after: raffle });
       const pub = await maybePublish(store, raffle.slug);
       return json(res, 201, { raffle: await store.publicRaffle(raffle.slug), published: pub.published });
     }
@@ -172,7 +221,9 @@ export async function handler(req, res) {
       if (parts[4] === "numbers.json") return json(res, 200, await store.publicNumbers(slug));
     }
 
+    // Contiene datos de contacto privados -> solo roles autorizados (Guia 5.2).
     if (M === "GET" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "purchases") {
+      requireLevel(await requireAuth(req, store), "OPERATOR");
       const slug = parts[2];
       await store.getRaffle(slug);
       return json(res, 200, { purchases: await store.adminPurchases(slug, url.searchParams.get("status") || null) });
@@ -218,22 +269,29 @@ export async function handler(req, res) {
       return json(res, 200, { purchaseId: p.id, status: p.status });
     }
 
+    // Aprobar vende el numero: solo ADMIN+ (un abierto aqui = numeros vendidos sin pagar).
     if (M === "POST" && parts[0] === "api" && parts[1] === "purchases" && parts[3] === "approve") {
-      const b = await readBody(req);
-      const p = await store.approve(parts[2], { approvedBy: b.approvedBy || "admin" });
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
+      const p = await store.approve(parts[2], { approvedBy: user.email });
+      await store.audit({ actor: user.email, action: "APPROVE_PURCHASE", entityType: "purchase", entityId: p.id, after: { number: p.number, status: p.status } });
       const pub = await maybePublish(store, p.slug);
       return json(res, 200, { purchaseId: p.id, status: p.status, verifiedAt: p.verifiedAt, published: pub.published });
     }
 
     if (M === "POST" && parts[0] === "api" && parts[1] === "purchases" && parts[3] === "reject") {
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
       const b = await readBody(req);
       const p = await store.reject(parts[2], { reason: b.reason || "" });
+      await store.audit({ actor: user.email, action: "REJECT_PURCHASE", entityType: "purchase", entityId: p.id, after: { number: p.number, reason: b.reason || "" } });
       return json(res, 200, { purchaseId: p.id, status: p.status });
     }
 
+    // Declarar ganador: solo ADMIN+ (un abierto aqui = cualquiera se auto-declara ganador).
     if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "draw") {
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
       const b = await readBody(req);
       const draw = await store.declareWinner(parts[2], b.number, b.mechanism || "ADMIN_INPUT");
+      await store.audit({ actor: user.email, action: "DECLARE_WINNER", entityType: "raffle", entityId: parts[2], after: draw });
       const pub = await maybePublish(store, parts[2], draw);
       return json(res, 200, { ...draw, published: pub.published });
     }

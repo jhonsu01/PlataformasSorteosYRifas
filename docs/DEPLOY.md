@@ -88,6 +88,7 @@ vercel link           # crea/enlaza el proyecto
 Configura las variables (o desde el dashboard → Settings → Environment Variables):
 
 ```bash
+vercel env add JWT_ACCESS_SECRET production   # OBLIGATORIO (ver aviso abajo)
 vercel env add DATABASE_URL production        # la cadena -pooler de Neon
 vercel env add WOMPI_PUBLIC_KEY production    # pub_test_xxx
 vercel env add WOMPI_PRIVATE_KEY production   # prv_test_xxx  (firma de integridad)
@@ -122,6 +123,55 @@ Si `storage` dice `memory`, falta `DATABASE_URL`. Si `wompiConfigured` es `false
   `CRON_SECRET`).
 
 > No se usa `src/server.js` en Vercel: ese archivo es solo para `npm start` local.
+
+---
+
+## 2.5. Autenticación (haz esto antes que Wompi)
+
+### `JWT_ACCESS_SECRET` es obligatorio
+
+Con `DATABASE_URL` presente, **el backend se niega a arrancar sin él** y responde `500`.
+Es a propósito: en serverless cada contenedor generaría un secreto distinto y las
+sesiones se caerían al azar, sin error visible. Mejor fallar fuerte.
+
+Genera uno y añádelo en **Settings → Environment Variables → Production**:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
+
+Luego **Redeploy**.
+
+### Crear el primer administrador
+
+```bash
+cd services/backend
+DATABASE_URL="postgres://...-pooler.../db?sslmode=require" \
+ADMIN_EMAIL="tu@correo.com" ADMIN_PASSWORD='una-clave-larga-y-unica' \
+  npm run create-admin
+# -> Administrador creado: tu@correo.com (SUPER_ADMIN)
+```
+
+> Las credenciales van por variables de entorno para no quedar en el historial del shell.
+> Mínimo 12 caracteres. Rol por defecto `SUPER_ADMIN` (o `ADMIN_ROLE=ADMIN|OPERATOR`).
+
+### Activar 2FA
+
+Abre la app Admin → inicia sesión → **Seguridad** → *Generar secreto* → añádelo en Google
+Authenticator/Authy (entrada manual) → escribe el código → **Activar 2FA**.
+
+La Guía lo exige para `SUPER_ADMIN`/`ADMIN`: sin 2FA, una contraseña filtrada basta para
+aprobar pagos o declarar ganadores.
+
+### Qué queda protegido
+
+| Endpoint | Acceso |
+| --- | --- |
+| `POST /api/raffles` · `POST /api/purchases/:id/approve` · `/reject` · `POST /api/raffles/:slug/draw` | **ADMIN+** |
+| `GET /api/raffles/:slug/purchases` (contiene teléfono/correo) | **OPERATOR+** |
+| `GET /health` · JSON público · `POST /api/raffles/:slug/reserve` · webhook de Wompi | público |
+
+El webhook no lleva JWT: se autentica con la **firma de Wompi** (`WOMPI_EVENTS_KEY`).
 
 ---
 

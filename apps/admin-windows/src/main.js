@@ -40,16 +40,75 @@ function invoke(cmd, args) {
   return Promise.reject(new Error("Tauri no disponible"));
 }
 
-// Cliente HTTP hacia el backend.
-async function api(path, { method = "GET", body } = {}) {
+// --------------------------- Sesion ---------------------------
+// El access token vive en memoria (no se persiste). El refresh sí, para no
+// re-pedir la clave en cada arranque; se rota en cada uso.
+let accessToken = null;
+let session = null; // { user, mustEnable2fa }
+
+const getRefresh = () => localStorage.getItem("srRefresh");
+const setRefresh = (t) => (t ? localStorage.setItem("srRefresh", t) : localStorage.removeItem("srRefresh"));
+
+function applySession(s) {
+  accessToken = s.accessToken;
+  setRefresh(s.refreshToken);
+  session = { user: s.user, mustEnable2fa: s.mustEnable2fa };
+  return session;
+}
+
+async function raw(path, { method = "GET", body, token } = {}) {
   const res = await fetch(cfg.backendUrl.replace(/\/$/, "") + path, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: {
+      ...(body ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.totpRequired = data.totpRequired;
+    throw err;
+  }
   return data;
+}
+
+/** Cliente HTTP: añade el token y renueva la sesión si expiró (401). */
+async function api(path, opts = {}) {
+  try {
+    return await raw(path, { ...opts, token: accessToken });
+  } catch (e) {
+    if (e.status !== 401 || !getRefresh()) throw e;
+    // Access token vencido: renovar con el refresh y reintentar una vez.
+    try {
+      applySession(await raw("/api/auth/refresh", { method: "POST", body: { refreshToken: getRefresh() } }));
+    } catch {
+      cerrarSesion();
+      throw new Error("Sesión expirada. Vuelve a iniciar sesión.");
+    }
+    return await raw(path, { ...opts, token: accessToken });
+  }
+}
+
+async function restaurarSesion() {
+  if (!getRefresh()) return false;
+  try {
+    applySession(await raw("/api/auth/refresh", { method: "POST", body: { refreshToken: getRefresh() } }));
+    return true;
+  } catch {
+    setRefresh(null);
+    return false;
+  }
+}
+
+function cerrarSesion() {
+  const r = getRefresh();
+  if (r) raw("/api/auth/logout", { method: "POST", body: { refreshToken: r } }).catch(() => {});
+  accessToken = null;
+  session = null;
+  setRefresh(null);
 }
 
 let backendOnline = false;
@@ -73,10 +132,31 @@ async function checkHealth() {
 const VIEWS = {};
 let current = "panel";
 
+// Vistas que no requieren sesion iniciada.
+const PUBLICAS = new Set(["login", "config"]);
+
 function setView(name) {
+  // Guard: sin sesion solo se puede ver el login (y la config, para apuntar al backend).
+  if (!session && !PUBLICAS.has(name)) name = "login";
   current = name;
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+  document.querySelector(".sidebar").style.display = session || name === "config" ? "" : "none";
+  pintarUsuario();
   render();
+}
+
+function pintarUsuario() {
+  const box = document.getElementById("user-box");
+  if (!box) return;
+  if (!session) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="user-mail">${esc(session.user.email)}</div>
+    <div class="user-role">${esc(session.user.role)}${session.user.totpEnabled ? " · 2FA ✓" : ""}</div>
+    <button id="btn-logout" class="btn-logout">Cerrar sesión</button>`;
+  document.getElementById("btn-logout").onclick = () => {
+    cerrarSesion();
+    toast("Sesión cerrada");
+    setView("login");
+  };
 }
 
 async function render() {
@@ -90,9 +170,107 @@ async function render() {
 }
 
 function backendBanner() {
-  if (backendOnline) return "";
-  return `<div class="banner-warn">⚠️ Backend no conectado. Inícialo con <code>cd services/backend &amp;&amp; npm start</code> o ajusta la URL en <b>Configuración</b>.</div>`;
+  let html = "";
+  if (!backendOnline) {
+    html += `<div class="banner-warn">⚠️ Backend no conectado. Inícialo con <code>cd services/backend &amp;&amp; npm start</code> o ajusta la URL en <b>Configuración</b>.</div>`;
+  }
+  if (session?.mustEnable2fa) {
+    html += `<div class="banner-warn">🔐 Tu cuenta aún no tiene 2FA. <b>Actívalo en Seguridad</b>: sin él, una contraseña filtrada basta para aprobar pagos.</div>`;
+  }
+  return html;
 }
+
+// --------------------------- Vista: Login ---------------------------
+VIEWS.login = async (el) => {
+  await checkHealth();
+  el.innerHTML = `
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-brand">🎟️</div>
+        <h1>Sorteos y Rifas</h1>
+        <p class="muted small">Panel de administración</p>
+        ${!backendOnline ? `<div class="banner-warn" style="margin-top:16px">No hay conexión con el backend (<code>${esc(cfg.backendUrl)}</code>). Ajústalo en Configuración.</div>` : ""}
+        <form id="form-login" style="margin-top:18px">
+          <label class="fld">Correo<input name="email" type="email" required autocomplete="username" /></label>
+          <label class="fld">Contraseña<input name="password" type="password" required autocomplete="current-password" /></label>
+          <label class="fld" id="fld-totp" style="display:none">Código 2FA (6 dígitos)
+            <input name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
+          </label>
+          <button type="submit" class="btn-approve" style="width:100%;margin-top:6px">Entrar</button>
+        </form>
+        <button id="ir-config" class="btn-link">Configurar backend</button>
+      </div>
+    </div>`;
+
+  $("#ir-config").onclick = () => setView("config");
+  $("#form-login").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const creds = { email: f.email.value.trim(), password: f.password.value };
+    const totp = f.totp.value.trim();
+    if (totp) creds.totp = totp;
+    try {
+      const s = await raw("/api/auth/login", { method: "POST", body: creds });
+      applySession(s);
+      toast(`Bienvenido, ${s.user.email}`);
+      setView(s.mustEnable2fa ? "seguridad" : "panel");
+    } catch (err) {
+      if (err.totpRequired) {
+        $("#fld-totp").style.display = "";
+        f.totp.focus();
+        toast("Introduce tu código de 2FA");
+      } else {
+        toast(err.message, false);
+      }
+    }
+  };
+};
+
+// --------------------------- Vista: Seguridad (2FA) ---------------------------
+VIEWS.seguridad = async (el) => {
+  const yaActivo = session?.user?.totpEnabled;
+  el.innerHTML = `
+    <header class="topbar"><div><h1>Seguridad</h1><p class="muted">Verificación en dos pasos (2FA)</p></div></header>
+    ${yaActivo ? `
+      <section class="panel"><h2>✅ 2FA activo</h2>
+        <p class="muted small">Tu cuenta pide un código temporal al iniciar sesión.</p></section>` : `
+      <section class="panel">
+        <h2>Activa el 2FA</h2>
+        <p class="muted small">La Guía lo exige para cuentas de administración: sin él, una contraseña filtrada basta para aprobar pagos o declarar ganadores.</p>
+        <div id="totp-paso1"><button id="btn-setup" class="btn-approve" style="margin-top:12px">Generar secreto</button></div>
+        <div id="totp-paso2" style="display:none;margin-top:16px">
+          <p class="small">1. Abre Google Authenticator / Authy → <b>Introducir clave manualmente</b>.<br>
+             2. Pega este secreto (cuenta: <b>${esc(session?.user?.email || "")}</b>):</p>
+          <div class="secret-box" id="secret"></div>
+          <p class="small">3. Escribe el código de 6 dígitos que te muestre:</p>
+          <form id="form-totp" class="form-grid" style="grid-template-columns:180px auto">
+            <label>Código<input name="code" inputmode="numeric" maxlength="6" required /></label>
+            <div class="form-actions"><button type="submit" class="btn-approve">Activar 2FA</button></div>
+          </form>
+        </div>
+      </section>`}`;
+
+  const btn = $("#btn-setup");
+  if (btn) btn.onclick = async () => {
+    try {
+      const { secret } = await api("/api/auth/totp/setup", { method: "POST" });
+      $("#totp-paso1").style.display = "none";
+      $("#totp-paso2").style.display = "";
+      $("#secret").textContent = secret.replace(/(.{4})/g, "$1 ").trim();
+      $("#form-totp").onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          await api("/api/auth/totp/enable", { method: "POST", body: { code: e.target.code.value.trim() } });
+          session.user.totpEnabled = true;
+          session.mustEnable2fa = false;
+          toast("2FA activado");
+          pintarUsuario();
+          render();
+        } catch (err) { toast(err.message, false); }
+      };
+    } catch (err) { toast(err.message, false); }
+  };
+};
 
 // --------------------------- Vista: Panel ---------------------------
 VIEWS.panel = async (el) => {
@@ -349,7 +527,11 @@ document.querySelectorAll(".nav-item").forEach((b) => {
   b.addEventListener("click", () => setView(b.dataset.view));
 });
 
-loadVersion();
-setView("panel");
-// Refresco periodico del badge de conexion.
-setInterval(checkHealth, 30_000);
+(async function boot() {
+  loadVersion();
+  await checkHealth();
+  // Si hay un refresh guardado, se restaura la sesion sin pedir la clave.
+  const hay = await restaurarSesion();
+  setView(hay ? (session.mustEnable2fa ? "seguridad" : "panel") : "login");
+  setInterval(checkHealth, 30_000);
+})();
