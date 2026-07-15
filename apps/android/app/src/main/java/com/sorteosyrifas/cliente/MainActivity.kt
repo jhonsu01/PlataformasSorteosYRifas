@@ -2,6 +2,7 @@ package com.sorteosyrifas.cliente
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -29,9 +30,13 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+// `items` existe en lazy y en lazy.grid con el mismo nombre: importar ambos sin
+// alias es ambiguo y no compila.
+import androidx.compose.foundation.lazy.items as columnItems
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -65,6 +70,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -82,7 +88,18 @@ data class Raffle(
 data class Sold(val number: Int, val buyer: String)
 data class DrawWinner(val number: Int, val buyer: String)
 
-/** Datos que devuelve el backend al reservar: todo lo necesario para pagar. */
+/** Resumen para el selector de rifas (GET /api/raffles). */
+data class RaffleSummary(
+    val slug: String, val title: String, val status: String,
+    val sold: Int, val total: Int, val priceCents: Long, val max: Int,
+)
+
+/** Compra propia guardada en el dispositivo (ver MisNumeros). */
+data class MiCompra(val purchaseId: String, val slug: String, val number: Int)
+
+/** Estado vivo de una compra propia (GET /api/purchases/:id). */
+data class EstadoCompra(val number: Int, val status: String)
+
 data class Checkout(
     val purchaseId: String, val reference: String, val amountInCents: Long,
     val publicKey: String, val integritySignature: String,
@@ -93,26 +110,177 @@ private val BrandPink = Color(0xFFDB2777)
 private val Gold = Color(0xFFFBBF24)
 private val FreeGray = Color(0xFFEDEAF5)
 
-/** URL centinela: cuando el WebView navega aqui, el pago termino. */
 private const val REDIRECT_URL = "https://sorteosyrifas.app/resultado"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { RaffleApp() } } }
+        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { App() } } }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compras propias: se guardan en el dispositivo. No hay cuentas de usuario, y
+// preguntar al backend "que compro este telefono" seria un buscador de datos de
+// terceros. Asi cada quien solo ve lo suyo, sin identificarse.
+// ---------------------------------------------------------------------------
+private fun guardarMiCompra(prefs: SharedPreferences, c: MiCompra) {
+    val arr = JSONArray(prefs.getString("misCompras", "[]"))
+    arr.put(JSONObject().apply {
+        put("purchaseId", c.purchaseId); put("slug", c.slug); put("number", c.number)
+    })
+    prefs.edit().putString("misCompras", arr.toString()).apply()
+}
+
+private fun leerMisCompras(prefs: SharedPreferences, slug: String): List<MiCompra> {
+    val arr = JSONArray(prefs.getString("misCompras", "[]"))
+    return buildList {
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            if (o.getString("slug") == slug) {
+                add(MiCompra(o.getString("purchaseId"), o.getString("slug"), o.getInt("number")))
+            }
+        }
     }
 }
 
 @Composable
-fun RaffleApp() {
+fun App() {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val prefs = remember { ctx.getSharedPreferences("sorteos", Context.MODE_PRIVATE) }
 
     var backendBase by remember { mutableStateOf(prefs.getString("backendBase", BuildConfig.BACKEND_BASE) ?: "") }
-    var slug by remember { mutableStateOf(prefs.getString("slug", "sorteo-demo") ?: "sorteo-demo") }
+    var slug by remember { mutableStateOf(prefs.getString("slug", "") ?: "") }
+    var showSettings by remember { mutableStateOf(false) }
 
+    fun elegir(s: String) {
+        slug = s
+        prefs.edit().putString("slug", s).apply()
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        if (slug.isBlank()) {
+            // Sin rifa elegida: el usuario escoge de la lista, no escribe nada.
+            PickerScreen(backendBase, onElegir = { elegir(it) }, onSettings = { showSettings = true })
+        } else {
+            RaffleScreen(
+                backendBase = backendBase, slug = slug, prefs = prefs,
+                onCambiarRifa = { elegir("") },
+            )
+        }
+
+        if (showSettings) SettingsDialog(
+            backendBase = backendBase,
+            onDismiss = { showSettings = false },
+            onSave = { b ->
+                backendBase = b.trimEnd('/')
+                prefs.edit().putString("backendBase", backendBase).apply()
+                showSettings = false
+                elegir("") // al cambiar de backend, la rifa anterior ya no aplica
+            },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Selector de rifas
+// ---------------------------------------------------------------------------
+@Composable
+private fun PickerScreen(backendBase: String, onElegir: (String) -> Unit, onSettings: () -> Unit) {
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var rifas by remember { mutableStateOf<List<RaffleSummary>>(emptyList()) }
+
+    LaunchedEffect(backendBase) {
+        loading = true
+        try {
+            rifas = fetchRaffles(backendBase)
+            error = null
+            // Si solo hay una, no hacemos elegir al usuario: entramos directo.
+            if (rifas.size == 1) onElegir(rifas.first().slug)
+        } catch (e: Exception) {
+            error = e.message ?: "No se pudo cargar la lista de sorteos."
+        } finally {
+            loading = false
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Box(
+            Modifier.fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(BrandViolet, BrandPink)))
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(20.dp)
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text("Sorteos y Rifas", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("Elige el sorteo que te interesa", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp)
+                }
+                Text("⚙", color = Color.White, fontSize = 22.sp, modifier = Modifier.clickable { onSettings() })
+            }
+        }
+
+        when {
+            loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = BrandViolet) }
+            error != null -> Column(
+                Modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("No se pudo conectar", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(error!!, textAlign = TextAlign.Center, color = Color.Gray, fontSize = 13.sp)
+                Spacer(Modifier.height(16.dp))
+                Button(onSettings) { Text("Ajustes") }
+            }
+            rifas.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                Text("Aún no hay sorteos publicados.", color = Color.Gray)
+            }
+            else -> LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                columnItems(rifas) { r -> RaffleCard(r) { onElegir(r.slug) } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RaffleCard(r: RaffleSummary, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(r.title, fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                Box(
+                    Modifier.background(
+                        if (r.status == "ACTIVE") BrandViolet else Color.Gray,
+                        RoundedCornerShape(20.dp)
+                    ).padding(horizontal = 10.dp, vertical = 4.dp)
+                ) { Text(statusEs(r.status), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium) }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("${formatCop(r.priceCents)} por número", color = Color.Gray, fontSize = 13.sp)
+            Text("Vendidos: ${r.sold} de ${r.total}", color = Color.Gray, fontSize = 13.sp)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pantalla de la rifa
+// ---------------------------------------------------------------------------
+@Composable
+private fun RaffleScreen(
+    backendBase: String, slug: String, prefs: SharedPreferences,
+    onCambiarRifa: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var raffle by remember { mutableStateOf<Raffle?>(null) }
@@ -120,10 +288,10 @@ fun RaffleApp() {
     var winner by remember { mutableStateOf<DrawWinner?>(null) }
     var reload by remember { mutableStateOf(0) }
 
-    var showSettings by remember { mutableStateOf(false) }
     var buyNumber by remember { mutableStateOf<Int?>(null) }
     var checkout by remember { mutableStateOf<Checkout?>(null) }
     var busyMsg by remember { mutableStateOf<String?>(null) }
+    var showMisNumeros by remember { mutableStateOf(false) }
 
     LaunchedEffect(reload, backendBase, slug) {
         loading = true
@@ -145,29 +313,27 @@ fun RaffleApp() {
     Box(Modifier.fillMaxSize()) {
         when {
             loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = BrandViolet) }
-            error != null -> ErrorView(error!!) { showSettings = true }
+            error != null -> Column(
+                Modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("No se pudo cargar", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(error!!, textAlign = TextAlign.Center, color = Color.Gray)
+                Spacer(Modifier.height(16.dp))
+                Button(onCambiarRifa) { Text("Ver otros sorteos") }
+            }
             raffle != null -> Content(
                 raffle = raffle!!, sold = sold, winner = winner,
-                onSettings = { showSettings = true },
+                onCambiarRifa = onCambiarRifa,
+                onMisNumeros = { showMisNumeros = true },
                 onPickNumber = { n ->
-                    when {
-                        backendBase.isBlank() -> busyMsg = "Configura la URL del backend (⚙) para poder comprar."
-                        raffle!!.status != "ACTIVE" -> busyMsg = "El sorteo no está activo."
-                        else -> buyNumber = n
-                    }
+                    if (raffle!!.status != "ACTIVE") busyMsg = "El sorteo no está activo."
+                    else buyNumber = n
                 },
             )
         }
-
-        if (showSettings) SettingsDialog(
-            backendBase = backendBase, slug = slug,
-            onDismiss = { showSettings = false },
-            onSave = { b, s ->
-                backendBase = b.trimEnd('/'); slug = s
-                prefs.edit().putString("backendBase", backendBase).putString("slug", slug).apply()
-                showSettings = false; reload++
-            },
-        )
 
         buyNumber?.let { n ->
             PurchaseDialog(
@@ -176,13 +342,15 @@ fun RaffleApp() {
                 onConfirm = { first, last, phone ->
                     buyNumber = null
                     busyMsg = "Reservando número ${padNum(n, raffle!!.max)}…"
-                    // Reserva en el backend y abre el checkout de Wompi.
                     scope.launch {
                         try {
                             val c = reserve(backendBase, slug, n, first, last, phone)
+                            // Se guarda ANTES de pagar: si el pago queda pendiente,
+                            // el comprador igual puede seguirlo en "Mis números".
+                            guardarMiCompra(prefs, MiCompra(c.purchaseId, slug, n))
                             busyMsg = null
                             if (c.publicKey.isBlank()) {
-                                busyMsg = "El backend no tiene configurada la llave pública de Wompi."
+                                busyMsg = "El sorteo no tiene pagos configurados todavía."
                             } else checkout = c
                         } catch (e: Exception) {
                             busyMsg = "No se pudo reservar: ${e.message}"
@@ -203,7 +371,7 @@ fun RaffleApp() {
                         busyMsg = when (st) {
                             "APPROVED" -> "¡Pago aprobado! El número es tuyo."
                             "REJECTED" -> "El pago fue rechazado. El número quedó libre."
-                            else -> "Pago en proceso. El número se marcará al confirmarse."
+                            else -> "Pago en proceso. Puedes seguirlo en “Mis números”."
                         }
                         reload++
                     }
@@ -211,6 +379,12 @@ fun RaffleApp() {
                 onCancel = { checkout = null },
             )
         }
+
+        if (showMisNumeros) MisNumerosDialog(
+            backendBase = backendBase, prefs = prefs, slug = slug,
+            max = raffle?.max ?: 999,
+            onDismiss = { showMisNumeros = false },
+        )
 
         busyMsg?.let { msg ->
             AlertDialog(
@@ -222,43 +396,27 @@ fun RaffleApp() {
     }
 }
 
-// --------------------------------------------------------------------------
-@Composable
-private fun ErrorView(msg: String, onSettings: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("No se pudo cargar", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-        Spacer(Modifier.height(8.dp))
-        Text(msg, textAlign = TextAlign.Center, color = Color.Gray)
-        Spacer(Modifier.height(16.dp))
-        Button(onSettings) { Text("Ajustes") }
-    }
-}
-
 @Composable
 private fun Content(
     raffle: Raffle, sold: List<Sold>, winner: DrawWinner?,
-    onSettings: () -> Unit, onPickNumber: (Int) -> Unit,
+    onCambiarRifa: () -> Unit, onMisNumeros: () -> Unit, onPickNumber: (Int) -> Unit,
 ) {
     val soldByNumber = remember(sold) { sold.associateBy { it.number } }
     val total = (raffle.max - raffle.min + 1).coerceAtLeast(0)
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     Column(Modifier.fillMaxSize()) {
-        Header(raffle, sold.size, total, onSettings)
+        Header(raffle, sold.size, total, onCambiarRifa, onMisNumeros)
         if (winner != null) WinnerBanner(winner, raffle.max)
         Legend()
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 56.dp),
+            columns = GridCells.Adaptive(minSize = 62.dp),
             contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 16.dp + navBottom),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            items((raffle.min..raffle.max).toList()) { n ->
+            gridItems((raffle.min..raffle.max).toList()) { n ->
                 val s = soldByNumber[n]
                 NumberCell(padNum(n, raffle.max), s, winner?.number == n) { if (s == null) onPickNumber(n) }
             }
@@ -267,10 +425,12 @@ private fun Content(
 }
 
 @Composable
-private fun Header(raffle: Raffle, soldCount: Int, total: Int, onSettings: () -> Unit) {
+private fun Header(
+    raffle: Raffle, soldCount: Int, total: Int,
+    onCambiarRifa: () -> Unit, onMisNumeros: () -> Unit,
+) {
     Box(
-        Modifier
-            .fillMaxWidth()
+        Modifier.fillMaxWidth()
             .background(Brush.verticalGradient(listOf(BrandViolet, BrandPink)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(20.dp)
@@ -279,8 +439,8 @@ private fun Header(raffle: Raffle, soldCount: Int, total: Int, onSettings: () ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(raffle.title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f))
-                Text("⚙", color = Color.White, fontSize = 22.sp,
-                    modifier = Modifier.clickable { onSettings() }.padding(start = 8.dp))
+                Text("⇄", color = Color.White, fontSize = 20.sp,
+                    modifier = Modifier.clickable { onCambiarRifa() }.padding(horizontal = 8.dp))
             }
             Spacer(Modifier.height(4.dp))
             Text("Premio: ${raffle.prize}", color = Color.White, fontSize = 15.sp)
@@ -294,12 +454,98 @@ private fun Header(raffle: Raffle, soldCount: Int, total: Int, onSettings: () ->
                 Spacer(Modifier.width(8.dp))
                 Pill("Estado: ${statusEs(raffle.status)}")
             }
-            Spacer(Modifier.height(8.dp))
-            Text("Vendidos: $soldCount de $total", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("Vendidos: $soldCount de $total", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Box(
+                    Modifier.background(Color.White, RoundedCornerShape(20.dp))
+                        .clickable { onMisNumeros() }
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                ) { Text("🎫 Mis números", color = BrandViolet, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+            }
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mis números
+// ---------------------------------------------------------------------------
+@Composable
+private fun MisNumerosDialog(
+    backendBase: String, prefs: SharedPreferences, slug: String, max: Int, onDismiss: () -> Unit,
+) {
+    val mias = remember { leerMisCompras(prefs, slug) }
+    var loading by remember { mutableStateOf(true) }
+    var estados by remember { mutableStateOf<List<EstadoCompra>>(emptyList()) }
+
+    LaunchedEffect(Unit) {
+        estados = mias.mapNotNull { c ->
+            try {
+                val o = JSONObject(httpGet("$backendBase/api/purchases/${c.purchaseId}"))
+                EstadoCompra(o.getInt("number"), o.getString("status"))
+            } catch (_: Exception) {
+                EstadoCompra(c.number, "DESCONOCIDO")
+            }
+        }
+        loading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onDismiss) { Text("Cerrar") } },
+        title = { Text("🎫 Mis números") },
+        text = {
+            when {
+                loading -> Box(Modifier.fillMaxWidth().padding(20.dp), Alignment.Center) {
+                    CircularProgressIndicator(color = BrandViolet)
+                }
+                mias.isEmpty() -> Text(
+                    "Todavía no has comprado números en este sorteo.\n\n" +
+                        "Toca un número libre para comprarlo.",
+                    fontSize = 14.sp, color = Color.Gray,
+                )
+                else -> Column {
+                    Text(
+                        "Se guardan en este dispositivo. Si desinstalas la app o cambias de " +
+                            "teléfono, esta lista se pierde (tu compra no).",
+                        fontSize = 11.sp, color = Color.Gray,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    estados.forEach { e ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier.background(colorEstado(e.status), RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) { Text(padNum(e.number, max), color = Color.White, fontWeight = FontWeight.Bold) }
+                            Spacer(Modifier.width(12.dp))
+                            Text(textoEstado(e.status), fontSize = 14.sp)
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+private fun colorEstado(s: String) = when (s) {
+    "APPROVED" -> BrandViolet
+    "PENDING" -> Gold
+    else -> Color.Gray
+}
+
+private fun textoEstado(s: String) = when (s) {
+    "APPROVED" -> "Pagado ✓ — el número es tuyo"
+    "PENDING" -> "Pago en proceso…"
+    "REJECTED" -> "Pago rechazado — número liberado"
+    "VOID" -> "Venta anulada por el organizador"
+    else -> "Estado no disponible"
+}
+
+// ---------------------------------------------------------------------------
 @Composable
 private fun Pill(text: String) {
     Box(
@@ -359,7 +605,7 @@ private fun NumberCell(etiqueta: String, sold: Sold?, isWinner: Boolean, onClick
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(etiqueta, color = fg, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(etiqueta, color = fg, fontWeight = FontWeight.Bold, fontSize = 15.sp)
             if (sold != null) {
                 Text(sold.buyer, color = fg.copy(alpha = 0.9f), fontSize = 8.sp, maxLines = 1, textAlign = TextAlign.Center)
             }
@@ -367,55 +613,24 @@ private fun NumberCell(etiqueta: String, sold: Sold?, isWinner: Boolean, onClick
     }
 }
 
-// --------------------------------------------------------------------------
 @Composable
-private fun SettingsDialog(backendBase: String, slug: String, onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
+private fun SettingsDialog(backendBase: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var b by remember { mutableStateOf(backendBase) }
-    var s by remember { mutableStateOf(slug) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Ajustes") },
+        title = { Text("Ajustes avanzados") },
         text = {
             Column {
-                Text("URL del backend (para comprar). Déjalo vacío para solo consultar.", fontSize = 12.sp, color = Color.Gray)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(b, { b = it }, label = { Text("http://192.168.1.10:8787") }, singleLine = true)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(s, { s = it }, label = { Text("Rifa (slug)") }, singleLine = true)
-            }
-        },
-        confirmButton = { TextButton({ onSave(b.trim(), s.trim()) }) { Text("Guardar") } },
-        dismissButton = { TextButton(onDismiss) { Text("Cancelar") } },
-    )
-}
-
-@Composable
-private fun PurchaseDialog(etiqueta: String, priceCents: Long, onDismiss: () -> Unit, onConfirm: (String, String, String) -> Unit) {
-    var first by remember { mutableStateOf("") }
-    var last by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Comprar número $etiqueta") },
-        text = {
-            Column {
-                Text("Precio: ${formatCop(priceCents)}", fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(4.dp))
-                Text("Solo se publicará tu nombre y la inicial del apellido.", fontSize = 11.sp, color = Color.Gray)
+                Text(
+                    "La app ya viene configurada. Cambia esto solo si el organizador " +
+                        "te indicó otro servidor.",
+                    fontSize = 12.sp, color = Color.Gray,
+                )
                 Spacer(Modifier.height(10.dp))
-                OutlinedTextField(first, { first = it }, label = { Text("Nombre") }, singleLine = true)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(last, { last = it }, label = { Text("Apellido") }, singleLine = true)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(phone, { phone = it }, label = { Text("Teléfono") }, singleLine = true)
+                OutlinedTextField(b, { b = it }, label = { Text("Servidor") }, singleLine = true)
             }
         },
-        confirmButton = {
-            TextButton(
-                enabled = first.isNotBlank() && last.isNotBlank(),
-                onClick = { onConfirm(first.trim(), last.trim(), phone.trim()) },
-            ) { Text("Ir a pagar") }
-        },
+        confirmButton = { TextButton({ onSave(b.trim()) }) { Text("Guardar") } },
         dismissButton = { TextButton(onDismiss) { Text("Cancelar") } },
     )
 }
@@ -451,13 +666,32 @@ private fun CheckoutScreen(url: String, onFinish: () -> Unit, onCancel: () -> Un
     }
 }
 
-// --------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Red
-// --------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 private fun publicBase(backendBase: String, slug: String): String =
     if (backendBase.isNotBlank()) "$backendBase/api/raffles/$slug/public" else BuildConfig.RAW_BASE
 
-/** URL del Web Checkout de Wompi con la firma de integridad generada por el backend. */
+private suspend fun fetchRaffles(backendBase: String): List<RaffleSummary> {
+    val arr = JSONObject(httpGet("$backendBase/api/raffles")).getJSONArray("raffles")
+    return buildList {
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            add(
+                RaffleSummary(
+                    slug = o.getString("slug"),
+                    title = o.getString("title"),
+                    status = o.getString("status"),
+                    sold = o.getInt("sold"),
+                    total = o.getInt("total"),
+                    priceCents = o.getLong("priceCents"),
+                    max = o.getJSONObject("numberRange").getInt("max"),
+                )
+            )
+        }
+    }
+}
+
 private fun wompiCheckoutUrl(c: Checkout): String {
     fun e(s: String) = URLEncoder.encode(s, "UTF-8")
     return "https://checkout.wompi.co/p/" +
@@ -487,7 +721,6 @@ private suspend fun reserve(backendBase: String, slug: String, number: Int, firs
     )
 }
 
-/** Tras volver del checkout, consulta el estado hasta que el webhook lo confirme. */
 private suspend fun pollPurchase(backendBase: String, purchaseId: String, attempts: Int = 8): String {
     repeat(attempts) {
         try {
@@ -505,7 +738,7 @@ private suspend fun httpGet(urlStr: String): String = withContext(Dispatchers.IO
         setRequestProperty("Accept", "application/json")
     }
     try {
-        if (conn.responseCode !in 200..299) throw RuntimeException("HTTP ${conn.responseCode} en $urlStr")
+        if (conn.responseCode !in 200..299) throw RuntimeException("HTTP ${conn.responseCode}")
         conn.inputStream.bufferedReader().use { it.readText() }
     } finally { conn.disconnect() }
 }
@@ -535,9 +768,9 @@ private suspend fun tryDrawJson(base: String): DrawWinner? = try {
     if (w != null) DrawWinner(w.getInt("number"), w.getString("buyer")) else null
 } catch (_: Exception) { null }
 
-// --------------------------------------------------------------------------
-// Parsing
-// --------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Parsing / formato
+// ---------------------------------------------------------------------------
 private fun parseRaffle(o: JSONObject): Raffle {
     val range = o.getJSONObject("numberRange")
     return Raffle(
@@ -567,10 +800,9 @@ private fun parseWinner(raffleJson: JSONObject): DrawWinner? {
 }
 
 /**
- * Formatea el numero de la rifa conservando los ceros a la izquierda: 1 -> "001".
+ * Numero de rifa con ceros a la izquierda: 1 -> "001".
  * En Colombia el ganador suele salir de las ultimas 3 cifras de una loteria
- * externa, asi que "001" es un numero distinto de "010" o "100": mostrarlo sin
- * los ceros seria incorrecto, no solo feo.
+ * externa, asi que "001" es un numero DISTINTO de "010" o "100".
  * El ancho sale del maximo del rango (999 -> 3 digitos, 99 -> 2).
  */
 private fun padNum(n: Int, max: Int): String =

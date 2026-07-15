@@ -15,9 +15,11 @@ val appVersionCode = ((project.findProperty("appVersionCode") as String?) ?: "1"
 val rawBase = (project.findProperty("rawBase") as String?)
     ?: "https://raw.githubusercontent.com/jhonsu01/PlataformasSorteosYRifas/main/examples/sorteo-demo/public"
 
-// URL del backend por defecto (para comprar). Vacia = solo consulta; el usuario
-// puede fijarla desde los ajustes (⚙) de la app sin recompilar.
-val backendBase = (project.findProperty("backendBase") as String?) ?: ""
+// URL del backend por defecto: viene lista de fabrica para que el comprador NO
+// tenga que escribir nada. Un replicador la cambia con -PbackendBase=... (o desde
+// los ajustes de la app, que quedan como opcion avanzada).
+val backendBase = (project.findProperty("backendBase") as String?)
+    ?: "https://plataformas-sorteos-y-rifas.vercel.app"
 
 android {
     namespace = "com.sorteosyrifas.cliente"
