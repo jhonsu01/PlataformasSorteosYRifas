@@ -8,13 +8,19 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { httpError, pseudonym } from "./store.js";
+import {
+  normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
+} from "./raffle-media.js";
 
 // Las migraciones viven junto al servicio para que viajen con el despliegue.
 const MIGRATIONS_DIR = new URL("../migrations/", import.meta.url);
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
+// Lista blanca explicita: esta forma ES la que se publica a GitHub. Un `SELECT *`
+// mapeado a ciegas convertiria cualquier columna futura en dato publico.
 function mapRaffle(r) {
+  const prizeItems = r.prize_items || [];
   return {
     slug: r.slug,
     title: r.title,
@@ -28,6 +34,11 @@ function mapRaffle(r) {
     minSoldToDraw: r.min_sold_to_draw,
     status: r.status,
     winner: r.winner || null,
+    media: r.media || {},
+    prizeItems,
+    // Calculado al leer, nunca almacenado: no puede contradecir al desglose.
+    prizeTotalCents: prizeTotalCents(prizeItems),
+    theme: r.theme || {},
   };
 }
 
@@ -97,12 +108,18 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
   }
 
   async function createRaffle(cfg) {
+    // Se valida ANTES de abrir la transaccion: si el premio viene mal, no tiene
+    // sentido haber creado 1000 tickets para luego revertirlos.
+    const media = normalizeMedia(cfg.media);
+    const prizeItems = normalizePrizeItems(cfg.prizeItems);
+    const theme = normalizeTheme(cfg.theme);
     await tx(async (c) => {
       await c.query(
-        `INSERT INTO raffles (slug,title,description,prize,price_cents,currency,number_min,number_max,starts_at,ends_at,min_sold_to_draw,status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (slug) DO NOTHING`,
+        `INSERT INTO raffles (slug,title,description,prize,price_cents,currency,number_min,number_max,starts_at,ends_at,min_sold_to_draw,status,media,prize_items,theme)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (slug) DO NOTHING`,
         [cfg.slug, cfg.title, cfg.description || "", cfg.prize, cfg.priceCents, cfg.currency || "COP",
-         cfg.numberRange.min, cfg.numberRange.max, cfg.startsAt, cfg.endsAt, cfg.minSoldToDraw ?? 0, cfg.status || "ACTIVE"]
+         cfg.numberRange.min, cfg.numberRange.max, cfg.startsAt, cfg.endsAt, cfg.minSoldToDraw ?? 0, cfg.status || "ACTIVE",
+         JSON.stringify(media), JSON.stringify(prizeItems), JSON.stringify(theme)]
       );
       await c.query(
         `INSERT INTO tickets (slug, number) SELECT $1, g FROM generate_series($2::int, $3::int) g
@@ -117,6 +134,49 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
     const { rows } = await q(`SELECT * FROM raffles WHERE slug=$1`, [slug]);
     if (!rows.length) throw httpError(404, "Rifa no encontrada");
     return mapRaffle(rows[0]);
+  }
+
+  /**
+   * Edita los campos "de vitrina". NO toca `numberRange`: los tickets ya existen
+   * y puede haber numeros vendidos; cambiar el rango en caliente dejaria compras
+   * apuntando fuera de rango.
+   *
+   * COALESCE con parametros nulos = "no lo mandaste, no lo toco". Asi el admin
+   * puede mandar solo `prizeItems` sin borrar el resto sin querer.
+   */
+  async function updateRaffle(slug, patch) {
+    await getRaffle(slug); // 404 si no existe
+    const media = patch.media === undefined ? null : JSON.stringify(normalizeMedia(patch.media));
+    const items = patch.prizeItems === undefined ? null : JSON.stringify(normalizePrizeItems(patch.prizeItems));
+    const theme = patch.theme === undefined ? null : JSON.stringify(normalizeTheme(patch.theme));
+    await q(
+      `UPDATE raffles SET
+         title       = COALESCE($2, title),
+         description = COALESCE($3, description),
+         prize       = COALESCE($4, prize),
+         media       = COALESCE($5::jsonb, media),
+         prize_items = COALESCE($6::jsonb, prize_items),
+         theme       = COALESCE($7::jsonb, theme)
+       WHERE slug=$1`,
+      [
+        slug,
+        patch.title === undefined ? null : String(patch.title).trim() || null,
+        patch.description === undefined ? null : String(patch.description).trim(),
+        patch.prize === undefined ? null : String(patch.prize).trim() || null,
+        media, items, theme,
+      ]
+    );
+    return getRaffle(slug);
+  }
+
+  // La escribe el publicador tras un push exitoso: es lo unico que permite al
+  // admin distinguir "nunca publicada" de "publicada".
+  async function markPublished(slug, repoFullName) {
+    await q(
+      `UPDATE raffles SET published_at = now(), repo_full_name = COALESCE($2, repo_full_name)
+        WHERE slug=$1`,
+      [slug, repoFullName || null]
+    );
   }
 
   async function reserve(slug, number, buyer, method = "MANUAL") {
@@ -336,6 +396,12 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
       priceCents: Number(r.price_cents),
       numberRange: { min: r.number_min, max: r.number_max },
       winner: r.winner || null,
+      // Estado de publicacion: sin esto el admin muestra "Publicar" para siempre
+      // y pierde el enlace al repo en cada recarga.
+      publishedAt: iso(r.published_at),
+      repoFullName: r.repo_full_name || null,
+      prizeTotalCents: prizeTotalCents(r.prize_items || []),
+      cover: r.media?.cover || null,
     }));
   }
 
@@ -472,7 +538,8 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
 
   return {
     kind: "postgres",
-    createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
+    createRaffle, getRaffle, updateRaffle, markPublished,
+    reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,

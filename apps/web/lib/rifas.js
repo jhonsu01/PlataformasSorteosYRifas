@@ -67,6 +67,39 @@ export const copFormat = (cents) =>
  */
 export const padNum = (n, max) => String(n).padStart(String(max ?? 0).length, "0");
 
+// --------------------------- Tema por rifa ---------------------------
+
+/** Violeta de la marca: el acento cuando la rifa no define el suyo. */
+export const ACCENT_DEFAULT = "#8b5cf6";
+
+/**
+ * El acento sale de raffle.json, o sea de la base de datos. Se revalida aqui
+ * ademas de en el backend: esto entra en una variable CSS y un valor con texto
+ * libre podria escribir CSS arbitrario. La web lee de GitHub, que es publico;
+ * no da por bueno lo que venga solo porque venga de "nuestro" JSON.
+ */
+export function accentOf(raffle) {
+  const a = raffle?.theme?.accent;
+  return typeof a === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(a) ? a : ACCENT_DEFAULT;
+}
+
+/**
+ * Color de texto legible SOBRE el acento.
+ *
+ * Sin esto, un acento oro (#f5c518) con texto blanco es ilegible y un violeta
+ * con texto negro tambien. Se decide por luminancia relativa (WCAG), no a ojo:
+ * cada organizador elige su color y nadie va a revisar el contraste por el.
+ */
+export function accentInk(hex) {
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16) / 255);
+  // Linealizacion sRGB antes de pesar los canales (WCAG 2.x).
+  const lin = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  return L > 0.45 ? "#0b0b0d" : "#ffffff";
+}
+
 export const statusEs = (s) =>
   ({
     ACTIVE: "Activo",

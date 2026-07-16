@@ -343,6 +343,24 @@ VIEWS.panel = async (el) => {
 };
 
 // --------------------------- Vista: Rifas ---------------------------
+
+/**
+ * Linea de estado de publicacion de una rifa.
+ *
+ * Antes esto se pintaba VACIO y solo se rellenaba si hacias clic en "Publicar"
+ * durante esa sesion: al recargar, el enlace desaparecia y una rifa publicada
+ * hace semanas se veia igual que una que nunca se publico. El estado ahora
+ * viene del backend (`publishedAt` / `repoFullName`), que es donde tiene que
+ * estar: un dato que solo existe en la memoria de una ventana no es un dato.
+ */
+function repoLinea(r) {
+  if (!r.publishedAt) return `<span class="muted small">Sin publicar</span>`;
+  const url = `https://github.com/${r.repoFullName}`;
+  const cuando = new Date(r.publishedAt).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" });
+  return `<a href="${esc(url)}" target="_blank" class="repo-link">📖 ${esc(r.repoFullName)}</a>
+          <span class="muted small" title="Última publicación"> · ${esc(cuando)}</span>`;
+}
+
 VIEWS.rifas = async (el) => {
   await checkHealth();
   if (!backendOnline) { el.innerHTML = backendBanner(); return; }
@@ -354,13 +372,18 @@ VIEWS.rifas = async (el) => {
       <div class="rifa-grid">
         ${raffles.map((r) => `
           <div class="rifa-card ${r.slug === cfg.raffleSlug ? "sel" : ""}">
+            ${r.cover ? `<img class="rifa-cover" src="${esc(r.cover)}" alt="" />` : ""}
             <div class="rifa-title">${esc(r.title)}</div>
             <div class="muted small">${esc(r.slug)} · ${esc(r.status)}</div>
-            <div class="rifa-meta">${r.sold}/${r.total} vendidos · ${copFormat(r.priceCents)}</div>
-            <div id="repo-${esc(r.slug)}" class="repo-line"></div>
+            <div class="rifa-meta">
+              ${r.sold}/${r.total} vendidos · ${copFormat(r.priceCents)}
+              ${r.prizeTotalCents ? `<br/>Premio: ${copFormat(r.prizeTotalCents)}` : ""}
+            </div>
+            <div class="repo-line">${repoLinea(r)}</div>
             <div class="rifa-acciones">
               <button class="btn-approve" data-sel="${esc(r.slug)}">${r.slug === cfg.raffleSlug ? "Activa" : "Seleccionar"}</button>
-              <button class="btn-secondary" data-pub="${esc(r.slug)}">Publicar a GitHub</button>
+              <button class="btn-secondary" data-premio="${esc(r.slug)}">Premio y fotos</button>
+              <button class="btn-link" data-pub="${esc(r.slug)}">${r.publishedAt ? "Republicar" : "Publicar a GitHub"}</button>
             </div>
           </div>`).join("")}
       </div>
@@ -386,18 +409,24 @@ VIEWS.rifas = async (el) => {
 
   el.querySelectorAll("[data-pub]").forEach((b) => {
     b.onclick = async () => {
+      const previo = b.textContent;
       b.disabled = true; b.textContent = "Publicando…";
       try {
         const r = await api(`/api/raffles/${b.dataset.pub}/publish`, { method: "POST" });
         toast(`Publicado en ${r.repo}`);
-        const linea = document.getElementById(`repo-${b.dataset.pub}`);
-        if (linea && r.url) linea.innerHTML = `<a href="${esc(r.url)}" target="_blank" class="repo-link">📖 ${esc(r.repo)}</a>`;
+        // Se repinta la vista en vez de parchear el DOM a mano: el backend ya
+        // guardo publishedAt, asi que al releer sale el estado de verdad y
+        // sobrevive a la siguiente recarga.
+        render();
       } catch (e) {
         toast(e.message, false);
-      } finally {
-        b.disabled = false; b.textContent = "Publicar a GitHub";
+        b.disabled = false; b.textContent = previo;
       }
     };
+  });
+
+  el.querySelectorAll("[data-premio]").forEach((b) => {
+    b.onclick = () => abrirEditorPremio(b.dataset.premio);
   });
 
   $("#form-rifa").onsubmit = async (e) => {
@@ -417,12 +446,307 @@ VIEWS.rifas = async (el) => {
       await api("/api/raffles", { method: "POST", body });
       cfg.raffleSlug = slug; saveCfg(cfg);
       toast(`Rifa "${body.title}" creada`);
-      render();
+      await render();
+      // Las fotos se commitean al repo de la rifa, y ese repo lo crea la
+      // publicacion que acaba de ocurrir. Por eso el premio se monta DESPUES de
+      // crear y no en este formulario: antes no habria donde subirlas.
+      abrirEditorPremio(slug);
     } catch (err) {
       toast(err.message, false);
     }
   };
 };
+
+// --------------------------- Editor de premio ---------------------------
+//
+// Monta la "vitrina" de la rifa: portada, galeria, video, desglose de items con
+// su valor y color de acento. Todo esto viaja a raffle.json y de ahi lo lee la
+// web publica.
+
+const ACENTOS = [
+  ["#8b5cf6", "Violeta"], ["#f5c518", "Oro"], ["#34d058", "Verde"],
+  ["#ff3b46", "Rojo"], ["#0ea5e9", "Azul"], ["#ec4899", "Magenta"],
+];
+
+/**
+ * Reduce la imagen ANTES de subirla.
+ *
+ * Una foto de celular son 4-8 MB. Vercel corta el cuerpo de la peticion en
+ * ~4,5 MB y base64 infla un 33%, asi que subirla cruda falla con un error que no
+ * dice nada. Ademas quedaria commiteada para siempre en el repo publico. 1600 px
+ * de ancho es de sobra para una web y deja el archivo en ~200-400 KB.
+ *
+ * Se usa canvas (esto es un webview) para no meter dependencias en Tauri.
+ */
+function reducirImagen(file, maxLado = 1600, calidad = 0.82) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("No se pudo leer el archivo"));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("El archivo no es una imagen válida"));
+      img.onload = () => {
+        const escala = Math.min(1, maxLado / Math.max(img.width, img.height));
+        const w = Math.round(img.width * escala);
+        const h = Math.round(img.height * escala);
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        const ctx = c.getContext("2d");
+        // Un PNG con transparencia sobre canvas vacio se vuelve negro al pasar a
+        // JPEG: se pinta blanco debajo primero.
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL("image/jpeg", calidad));
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+/** Sube una imagen al repo de la rifa y devuelve su URL raw. */
+async function subirImagen(slug, file) {
+  const base64 = await reducirImagen(file);
+  const r = await api(`/api/raffles/${slug}/media`, { method: "POST", body: { base64 } });
+  return r.url;
+}
+
+let premioEstado = null; // { slug, media, prizeItems, theme }
+
+async function abrirEditorPremio(slug) {
+  try {
+    const raffle = await api(`/api/raffles/${slug}/public/raffle.json`);
+    premioEstado = {
+      slug,
+      media: { cover: raffle.media?.cover || "", gallery: raffle.media?.gallery || [], youtubeId: raffle.media?.youtubeId || "" },
+      prizeItems: (raffle.prizeItems || []).map((i) => ({ ...i })),
+      theme: { accent: raffle.theme?.accent || "" },
+    };
+    pintarEditorPremio();
+  } catch (e) {
+    toast(e.message, false);
+  }
+}
+
+function cerrarEditorPremio() {
+  premioEstado = null;
+  $("#modal").innerHTML = "";
+  $("#modal").classList.remove("show");
+}
+
+function pintarEditorPremio() {
+  const s = premioEstado;
+  if (!s) return;
+  const total = s.prizeItems.reduce((a, i) => a + Number(i.valueCents || 0), 0);
+  const m = $("#modal");
+  m.classList.add("show");
+  m.innerHTML = `
+    <div class="modal-card">
+      <header class="modal-head">
+        <div>
+          <h2>Premio y fotos</h2>
+          <p class="muted small">${esc(s.slug)} · así se verá en la web pública</p>
+        </div>
+        <button class="btn-link" id="pm-cerrar">Cerrar</button>
+      </header>
+
+      <div class="modal-body">
+        <h3>Portada</h3>
+        <p class="muted small">Imagen grande de la rifa. Se usa también al compartir el enlace por WhatsApp.</p>
+        <div class="media-row">
+          ${s.media.cover ? `<div class="thumb"><img src="${esc(s.media.cover)}" alt="" /><button class="thumb-x" id="pm-cover-x">✕</button></div>` : ""}
+          <label class="drop">
+            <input type="file" accept="image/*" id="pm-cover" hidden />
+            <span>${s.media.cover ? "Cambiar portada" : "+ Subir portada"}</span>
+          </label>
+        </div>
+
+        <h3>Galería</h3>
+        <p class="muted small">Hasta 12 fotos del premio.</p>
+        <div class="media-row">
+          ${s.media.gallery.map((u, i) => `
+            <div class="thumb"><img src="${esc(u)}" alt="" /><button class="thumb-x" data-gx="${i}">✕</button></div>`).join("")}
+          ${s.media.gallery.length < 12 ? `
+            <label class="drop">
+              <input type="file" accept="image/*" id="pm-gal" hidden multiple />
+              <span>+ Añadir fotos</span>
+            </label>` : ""}
+        </div>
+
+        <h3>Video de YouTube</h3>
+        <p class="muted small">Pega la URL del video. Opcional.</p>
+        <input class="inp" id="pm-yt" placeholder="https://www.youtube.com/watch?v=..."
+               value="${esc(s.media.youtubeId ? `https://www.youtube.com/watch?v=${s.media.youtubeId}` : "")}" />
+
+        <h3>Color de la rifa</h3>
+        <p class="muted small">El acento de su página. Cada rifa puede tener el suyo.</p>
+        <div class="acentos">
+          ${ACENTOS.map(([hex, nom]) => `
+            <button class="acento ${(s.theme.accent || "#8b5cf6") === hex ? "on" : ""}"
+                    data-acc="${hex}" style="background:${hex}" title="${nom}"></button>`).join("")}
+        </div>
+
+        <h3>¿Qué se gana? · ${s.prizeItems.length} ${s.prizeItems.length === 1 ? "ítem" : "ítems"}</h3>
+        <p class="muted small">
+          El premio puede ser una cosa o muchas. El valor total se calcula solo:
+          <b>${copFormat(total)}</b>
+        </p>
+        <div class="items-edit">
+          ${s.prizeItems.map((it, i) => `
+            <div class="item-edit">
+              <div class="item-edit-img">
+                ${it.imageUrl ? `<img src="${esc(it.imageUrl)}" alt="" />` : `<span class="muted small">Sin foto</span>`}
+                <label class="mini">
+                  <input type="file" accept="image/*" data-iimg="${i}" hidden />
+                  <span>${it.imageUrl ? "Cambiar" : "Foto"}</span>
+                </label>
+              </div>
+              <div class="item-edit-campos">
+                <input class="inp" data-iname="${i}" placeholder="Qué es (ej: Microscopio SVA-75)" value="${esc(it.name)}" />
+                <input class="inp" data-idesc="${i}" placeholder="Descripción (opcional)" value="${esc(it.description || "")}" />
+                <div class="item-edit-fila">
+                  <input class="inp" data-ival="${i}" type="number" min="0" step="1000"
+                         placeholder="Valor en COP" value="${it.valueCents ? it.valueCents / 100 : ""}" />
+                  <label class="check">
+                    <input type="checkbox" data-ifeat="${i}" ${it.featured ? "checked" : ""} /> Destacado
+                  </label>
+                  <button class="btn-reject" data-idel="${i}">Quitar</button>
+                </div>
+              </div>
+            </div>`).join("")}
+        </div>
+        <button class="btn-secondary" id="pm-add">+ Añadir ítem al premio</button>
+      </div>
+
+      <footer class="modal-foot">
+        <button class="btn-link" id="pm-cancel">Cancelar</button>
+        <button class="btn-approve" id="pm-save">Guardar y publicar</button>
+      </footer>
+    </div>`;
+
+  // ---- Enlaces de la UI al estado. Se relee del DOM al guardar, asi que aqui
+  // ---- solo se atienden las acciones que cambian la estructura.
+  $("#pm-cerrar").onclick = cerrarEditorPremio;
+  $("#pm-cancel").onclick = cerrarEditorPremio;
+
+  $("#pm-add").onclick = () => {
+    volcarCampos();
+    s.prizeItems.push({ name: "", description: "", valueCents: 0, imageUrl: "", featured: false });
+    pintarEditorPremio();
+  };
+
+  m.querySelectorAll("[data-idel]").forEach((b) => {
+    b.onclick = () => {
+      volcarCampos();
+      s.prizeItems.splice(Number(b.dataset.idel), 1);
+      pintarEditorPremio();
+    };
+  });
+
+  m.querySelectorAll("[data-acc]").forEach((b) => {
+    b.onclick = () => { volcarCampos(); s.theme.accent = b.dataset.acc; pintarEditorPremio(); };
+  });
+
+  const conSubida = async (input, fn) => {
+    const file = input.files?.[0];
+    if (!file) return;
+    volcarCampos();
+    toast("Subiendo imagen…");
+    try {
+      const url = await subirImagen(s.slug, file);
+      fn(url);
+      pintarEditorPremio();
+      toast("Imagen subida");
+    } catch (e) {
+      toast(e.message, false);
+    }
+  };
+
+  $("#pm-cover")?.addEventListener("change", (e) => conSubida(e.target, (u) => { s.media.cover = u; }));
+  $("#pm-cover-x") && ($("#pm-cover-x").onclick = () => { volcarCampos(); s.media.cover = ""; pintarEditorPremio(); });
+
+  $("#pm-gal")?.addEventListener("change", async (e) => {
+    const files = [...(e.target.files || [])];
+    if (!files.length) return;
+    volcarCampos();
+    toast(`Subiendo ${files.length} imagen(es)…`);
+    try {
+      for (const f of files) {
+        if (s.media.gallery.length >= 12) break;
+        s.media.gallery.push(await subirImagen(s.slug, f));
+      }
+      pintarEditorPremio();
+      toast("Galería actualizada");
+    } catch (err) {
+      toast(err.message, false);
+    }
+  });
+
+  m.querySelectorAll("[data-gx]").forEach((b) => {
+    b.onclick = () => { volcarCampos(); s.media.gallery.splice(Number(b.dataset.gx), 1); pintarEditorPremio(); };
+  });
+
+  m.querySelectorAll("[data-iimg]").forEach((inp) => {
+    inp.addEventListener("change", (e) => {
+      const i = Number(inp.dataset.iimg);
+      conSubida(e.target, (u) => { s.prizeItems[i].imageUrl = u; });
+    });
+  });
+
+  $("#pm-save").onclick = guardarPremio;
+}
+
+/**
+ * Lee los inputs al estado antes de repintar.
+ *
+ * El editor se repinta entero en cada cambio estructural (añadir/quitar item).
+ * Sin volcar antes, lo que el usuario acababa de teclear se perderia al repintar.
+ */
+function volcarCampos() {
+  const s = premioEstado;
+  if (!s || !$("#modal").classList.contains("show")) return;
+  const m = $("#modal");
+  m.querySelectorAll("[data-iname]").forEach((i) => { s.prizeItems[Number(i.dataset.iname)].name = i.value; });
+  m.querySelectorAll("[data-idesc]").forEach((i) => { s.prizeItems[Number(i.dataset.idesc)].description = i.value; });
+  m.querySelectorAll("[data-ival]").forEach((i) => {
+    // El admin teclea pesos; el backend exige centavos ENTEROS. Math.round evita
+    // que 19999.999 (coma flotante) llegue como decimal y lo rechace la API.
+    s.prizeItems[Number(i.dataset.ival)].valueCents = Math.round(Number(i.value || 0) * 100);
+  });
+  m.querySelectorAll("[data-ifeat]").forEach((i) => { s.prizeItems[Number(i.dataset.ifeat)].featured = i.checked; });
+  const yt = $("#pm-yt");
+  if (yt) s.media.youtubeId = yt.value.trim();
+}
+
+async function guardarPremio() {
+  volcarCampos();
+  const s = premioEstado;
+  const b = $("#pm-save");
+  b.disabled = true; b.textContent = "Guardando…";
+  try {
+    const items = s.prizeItems.filter((i) => i.name.trim());
+    await api(`/api/raffles/${s.slug}`, {
+      method: "PATCH",
+      body: {
+        media: {
+          cover: s.media.cover || undefined,
+          gallery: s.media.gallery,
+          // Se manda la URL entera: el backend extrae el id de 11 caracteres.
+          youtubeId: s.media.youtubeId || undefined,
+        },
+        prizeItems: items,
+        theme: s.theme.accent ? { accent: s.theme.accent } : {},
+      },
+    });
+    toast("Premio guardado y publicado");
+    cerrarEditorPremio();
+    render();
+  } catch (e) {
+    toast(e.message, false);
+    b.disabled = false; b.textContent = "Guardar y publicar";
+  }
+}
 
 // --------------------------- Vista: Comprobantes ---------------------------
 let comprobantesTab = "PENDING";

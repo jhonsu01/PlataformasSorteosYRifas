@@ -96,4 +96,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // Carga de las fotos del premio (servidas por raw.githubusercontent.com).
+    // Se prefiere a un cargador propio porque LazyColumn recicla las filas: sin
+    // cache, cada scroll volveria a descargar la misma imagen. 2.7.0 es la ultima
+    // serie 2.x, compatible con el Compose del BOM 2024.10.01.
+    implementation("io.coil-kt:coil-compose:2.7.0")
 }

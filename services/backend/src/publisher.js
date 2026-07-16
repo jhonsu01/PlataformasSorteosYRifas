@@ -5,7 +5,9 @@
 // Solo se escribe el JSON privacy-safe derivado por el store. Gated: sin token+owner
 // no publica (modo demo) y el backend sigue sirviendo el JSON por su propia API.
 
+import crypto from "node:crypto";
 import { config, isGithubConfigured } from "./config.js";
+import { httpError } from "./http-error.js";
 
 const GITHUB_API = "https://api.github.com";
 
@@ -94,8 +96,8 @@ async function ensureRepo(slug, raffle) {
   return true;
 }
 
-/** Crea o actualiza un archivo JSON en el repo de la rifa. */
-async function putFile(slug, path, contentObj, message) {
+/** Crea o actualiza un archivo (bytes crudos) en el repo de la rifa. */
+async function putBytes(slug, path, buf, message) {
   const owner = config.github.owner;
   const branch = config.github.branch;
   const url = `/repos/${owner}/${slug}/contents/${path}`;
@@ -109,7 +111,7 @@ async function putFile(slug, path, contentObj, message) {
     method: "PUT",
     body: {
       message,
-      content: Buffer.from(JSON.stringify(contentObj, null, 2)).toString("base64"),
+      content: buf.toString("base64"),
       branch,
       ...(sha ? { sha } : {}),
     },
@@ -118,6 +120,58 @@ async function putFile(slug, path, contentObj, message) {
     throw new Error(`GitHub PUT ${path} fallo: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
   }
   return (await res.json()).commit?.sha;
+}
+
+/** Crea o actualiza un archivo JSON en el repo de la rifa. */
+const putFile = (slug, path, contentObj, message) =>
+  putBytes(slug, path, Buffer.from(JSON.stringify(contentObj, null, 2)), message);
+
+// Firmas de archivo reales. No se confia en el content-type ni en la extension
+// que manda el cliente: se miran los bytes. Evita que un error del admin (o algo
+// peor) meta al repo publico un archivo que no es una imagen.
+const FIRMAS = [
+  { ext: "jpg",  test: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+  { ext: "png",  test: (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 },
+  { ext: "gif",  test: (b) => b.subarray(0, 4).toString("ascii") === "GIF8" },
+  { ext: "webp", test: (b) => b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP" },
+];
+
+// 2,5 MB de imagen cruda.
+//
+// El techo real no es nuestro: Vercel corta el cuerpo de una funcion serverless
+// en ~4,5 MB, y la imagen viaja en base64 dentro del JSON (+33%). 2,5 MB -> ~3,4 MB
+// de base64, que pasa con margen. Poner 5 MB seria mentir: Vercel lo rechazaria
+// antes de llegar aqui y el admin veria un error opaco imposible de diagnosticar.
+// De todos modos el admin redimensiona antes de subir (~200-400 KB tipico).
+export const MAX_IMAGEN_BYTES = 2_500_000;
+
+/**
+ * Sube una imagen al repo publico de la rifa y devuelve su URL raw.
+ *
+ * El nombre es el hash del contenido: subir dos veces la misma foto no genera un
+ * commit nuevo (mismo sha -> mismo path -> GitHub no cambia nada), y una foto
+ * distinta nunca pisa a otra. Sin esto, "portada.jpg" se sobrescribiria y las
+ * rifas viejas cambiarian de imagen sola.
+ */
+export async function uploadImage(slug, buf) {
+  if (!isGithubConfigured()) {
+    throw httpError(503, "GitHub no configurado: no hay donde guardar la imagen (modo demo)");
+  }
+  if (!Buffer.isBuffer(buf) || buf.length === 0) throw httpError(400, "Imagen vacia");
+  if (buf.length > MAX_IMAGEN_BYTES) {
+    throw httpError(413, `Imagen demasiado grande (maximo ${(MAX_IMAGEN_BYTES / 1e6).toFixed(1)} MB)`);
+  }
+  const firma = FIRMAS.find((f) => f.test(buf));
+  if (!firma) throw httpError(400, "El archivo no es una imagen (JPG, PNG, GIF o WEBP)");
+
+  const hash = crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
+  const path = `public/media/${hash}.${firma.ext}`;
+  await putBytes(slug, path, buf, `chore: imagen ${hash}.${firma.ext}`);
+  return {
+    url: `https://raw.githubusercontent.com/${config.github.owner}/${slug}/${config.github.branch}/${path}`,
+    path,
+    bytes: buf.length,
+  };
 }
 
 /** Crea el README solo al crear el repo (no se pisa despues). */
@@ -163,12 +217,23 @@ export async function publishPublicState(store, slug, { draw = null } = {}) {
       await putFile(slug, "public/draw.json", draw,
         `feat: ganador declarado — numero ${draw.winningNumber}`);
     }
+
+    const repo = `${config.github.owner}/${slug}`;
+    // Deja constancia de que ESTA rifa ya vive en GitHub. Es lo unico que le
+    // permite al admin distinguir "sin publicar" de "publicada" tras recargar.
+    // Si falla, no se toca el resultado: la publicacion SI ocurrio.
+    try {
+      await store.markPublished(slug, repo);
+    } catch (e) {
+      console.error("[publish] no se pudo marcar como publicada:", e.message);
+    }
+
     return {
       published: true,
       created: nuevo,
-      repo: `${config.github.owner}/${slug}`,
-      url: `https://github.com/${config.github.owner}/${slug}`,
-      rawBase: `https://raw.githubusercontent.com/${config.github.owner}/${slug}/${config.github.branch}/public`,
+      repo,
+      url: `https://github.com/${repo}`,
+      rawBase: `https://raw.githubusercontent.com/${repo}/${config.github.branch}/public`,
       commit,
     };
   } catch (e) {

@@ -59,6 +59,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -84,7 +86,16 @@ import java.util.Locale
 data class Raffle(
     val title: String, val prize: String, val description: String,
     val priceCents: Long, val min: Int, val max: Int, val status: String,
+    // Vitrina del premio. Todos opcionales: una rifa creada antes de la v1.6.0
+    // no los trae y la app debe seguir funcionando igual.
+    val cover: String? = null,
+    val prizeTotalCents: Long = 0,
+    val prizeItems: List<PrizeItem> = emptyList(),
 )
+
+/** Una cosa de las que componen el premio, con su valor. */
+data class PrizeItem(val name: String, val description: String, val valueCents: Long)
+
 data class Sold(val number: Int, val buyer: String)
 data class DrawWinner(val number: Int, val buyer: String)
 
@@ -92,6 +103,8 @@ data class DrawWinner(val number: Int, val buyer: String)
 data class RaffleSummary(
     val slug: String, val title: String, val status: String,
     val sold: Int, val total: Int, val priceCents: Long, val max: Int,
+    val cover: String? = null,
+    val prizeTotalCents: Long = 0,
 )
 
 /** Compra propia guardada en el dispositivo (ver MisNumeros). */
@@ -255,19 +268,36 @@ private fun RaffleCard(r: RaffleSummary, onClick: () -> Unit) {
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(r.title, fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
-                Box(
-                    Modifier.background(
-                        if (r.status == "ACTIVE") BrandViolet else Color.Gray,
-                        RoundedCornerShape(20.dp)
-                    ).padding(horizontal = 10.dp, vertical = 4.dp)
-                ) { Text(statusEs(r.status), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium) }
+        Column {
+            // Solo si la rifa tiene portada: sin foto no se deja un hueco gris.
+            r.cover?.let { url ->
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+                )
             }
-            Spacer(Modifier.height(8.dp))
-            Text("${formatCop(r.priceCents)} por número", color = Color.Gray, fontSize = 13.sp)
-            Text("Vendidos: ${r.sold} de ${r.total}", color = Color.Gray, fontSize = 13.sp)
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(r.title, fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                    Box(
+                        Modifier.background(
+                            if (r.status == "ACTIVE") BrandViolet else Color.Gray,
+                            RoundedCornerShape(20.dp)
+                        ).padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) { Text(statusEs(r.status), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium) }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (r.prizeTotalCents > 0) {
+                    Text(
+                        "Premio: ${formatCop(r.prizeTotalCents)}",
+                        color = BrandViolet, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    )
+                }
+                Text("${formatCop(r.priceCents)} por número", color = Color.Gray, fontSize = 13.sp)
+                Text("Vendidos: ${r.sold} de ${r.total}", color = Color.Gray, fontSize = 13.sp)
+            }
         }
     }
 }
@@ -429,12 +459,29 @@ private fun Header(
     raffle: Raffle, soldCount: Int, total: Int,
     onCambiarRifa: () -> Unit, onMisNumeros: () -> Unit,
 ) {
-    Box(
-        Modifier.fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(BrandViolet, BrandPink)))
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .padding(20.dp)
-    ) {
+    Box(Modifier.fillMaxWidth()) {
+        // La portada va DETRAS del degradado, que se vuelve semitransparente para
+        // dejarla ver. Sin portada el degradado es opaco: si fuera translucido
+        // siempre, se veria el blanco del Surface por debajo.
+        raffle.cover?.let { url ->
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize(),
+            )
+        }
+        val degradado = if (raffle.cover != null) {
+            Brush.verticalGradient(listOf(BrandViolet.copy(alpha = 0.86f), BrandPink.copy(alpha = 0.94f)))
+        } else {
+            Brush.verticalGradient(listOf(BrandViolet, BrandPink))
+        }
+        Box(
+            Modifier.fillMaxWidth()
+                .background(degradado)
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(20.dp)
+        ) {
         Column {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(raffle.title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
@@ -447,6 +494,20 @@ private fun Header(
             if (raffle.description.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Text(raffle.description, color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+            }
+            // El comprador ve cuanto vale lo que puede ganar ANTES de pagar.
+            if (raffle.prizeTotalCents > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Valor del premio: ${formatCop(raffle.prizeTotalCents)}",
+                    color = Gold, fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                )
+                if (raffle.prizeItems.size > 1) {
+                    Text(
+                        "${raffle.prizeItems.size} ítems incluidos",
+                        color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp,
+                    )
+                }
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -464,6 +525,7 @@ private fun Header(
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 ) { Text("🎫 Mis números", color = BrandViolet, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
             }
+        }
         }
     }
 }
@@ -723,6 +785,9 @@ private suspend fun fetchRaffles(backendBase: String): List<RaffleSummary> {
                     total = o.getInt("total"),
                     priceCents = o.getLong("priceCents"),
                     max = o.getJSONObject("numberRange").getInt("max"),
+                    // opt*: una rifa sin premio montado sigue apareciendo.
+                    cover = o.optString("cover").ifBlank { null },
+                    prizeTotalCents = o.optLong("prizeTotalCents", 0),
                 )
             )
         }
@@ -810,6 +875,9 @@ private suspend fun tryDrawJson(base: String): DrawWinner? = try {
 // ---------------------------------------------------------------------------
 private fun parseRaffle(o: JSONObject): Raffle {
     val range = o.getJSONObject("numberRange")
+    // opt* en todo lo nuevo: las rifas creadas antes de la v1.6.0 no traen estos
+    // campos y un get* estricto reventaria el parseo de una rifa que funciona.
+    val items = o.optJSONArray("prizeItems")
     return Raffle(
         title = o.getString("title"),
         prize = o.getString("prize"),
@@ -818,6 +886,20 @@ private fun parseRaffle(o: JSONObject): Raffle {
         min = range.getInt("min"),
         max = range.getInt("max"),
         status = o.getString("status"),
+        cover = o.optJSONObject("media")?.optString("cover")?.ifBlank { null },
+        prizeTotalCents = o.optLong("prizeTotalCents", 0),
+        prizeItems = buildList {
+            for (i in 0 until (items?.length() ?: 0)) {
+                val item = items!!.getJSONObject(i)
+                add(
+                    PrizeItem(
+                        name = item.optString("name", ""),
+                        description = item.optString("description", ""),
+                        valueCents = item.optLong("valueCents", 0),
+                    )
+                )
+            }
+        },
     )
 }
 

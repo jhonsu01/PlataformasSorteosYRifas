@@ -10,7 +10,8 @@ import { config, jwtSecretIsEphemeral, wompiEnvValid, safeWompiEnv, isGithubConf
 import { createStore } from "./store.js";
 import { createPostgresStore } from "./store-postgres.js";
 import { verifyEventSignature, actionForStatus, integritySignature } from "./wompi.js";
-import { publishPublicState } from "./publisher.js";
+import { publishPublicState, uploadImage } from "./publisher.js";
+import { httpError } from "./http-error.js";
 import {
   login, refreshSession, logout, requireAuth, requireLevel,
   setupTotp, enableTotp, publicUser,
@@ -87,7 +88,7 @@ async function ensureDemo(store) {
 // ---------------------------------------------------------------------------
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
@@ -97,6 +98,11 @@ const json = (res, status, obj) => {
   res.end(JSON.stringify(obj));
 };
 
+// Tope del cuerpo. Las imagenes viajan en base64 dentro del JSON: 2,5 MB de
+// imagen -> ~3,4 MB. 6 MB deja margen y evita que una peticion sin limite se
+// acumule en memoria hasta tumbar el proceso.
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
+
 async function readBody(req) {
   // En Vercel el body puede venir ya parseado.
   if (req.body !== undefined && req.body !== null) {
@@ -104,7 +110,14 @@ async function readBody(req) {
     try { return JSON.parse(req.body); } catch { throw Object.assign(new Error("JSON invalido"), { status: 400 }); }
   }
   const chunks = [];
-  for await (const c of req) chunks.push(c);
+  let total = 0;
+  for await (const c of req) {
+    total += c.length;
+    if (total > MAX_BODY_BYTES) {
+      throw Object.assign(new Error("Cuerpo demasiado grande"), { status: 413 });
+    }
+    chunks.push(c);
+  }
   if (!chunks.length) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -241,6 +254,9 @@ export async function handler(req, res) {
         startsAt: b.startsAt || new Date().toISOString(),
         endsAt: b.endsAt || new Date(Date.now() + 30 * 864e5).toISOString(),
         minSoldToDraw: Number(b.minSoldToDraw || 0), status: "ACTIVE",
+        // Opcionales: se puede crear la rifa desnuda y vestirla despues con PATCH
+        // (que es el flujo del admin, porque subir fotos exige que el repo exista).
+        media: b.media, prizeItems: b.prizeItems, theme: b.theme,
       });
       await store.audit({ actor: user.email, action: "CREATE_RAFFLE", entityType: "raffle", entityId: raffle.slug, after: raffle });
       const pub = await maybePublish(store, raffle.slug);
@@ -319,6 +335,54 @@ export async function handler(req, res) {
       const p = await store.reject(parts[2], { reason: b.reason || "" });
       await store.audit({ actor: user.email, action: "REJECT_PURCHASE", entityType: "purchase", entityId: p.id, after: { number: p.number, reason: b.reason || "" } });
       return json(res, 200, { purchaseId: p.id, status: p.status });
+    }
+
+    // PATCH /api/raffles/:slug -> edita la vitrina (titulo, premio, fotos, video,
+    // desglose de items, color). No toca el rango de numeros: hay tickets creados
+    // y posiblemente vendidos.
+    if (M === "PATCH" && parts[0] === "api" && parts[1] === "raffles" && parts.length === 3) {
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
+      const slug = parts[2];
+      const b = await readBody(req);
+      const antes = await store.getRaffle(slug);
+      const raffle = await store.updateRaffle(slug, b);
+      await store.audit({
+        actor: user.email, action: "UPDATE_RAFFLE", entityType: "raffle", entityId: slug,
+        before: { prizeItems: antes.prizeItems, media: antes.media, theme: antes.theme },
+        after: { prizeItems: raffle.prizeItems, media: raffle.media, theme: raffle.theme },
+      });
+      // Republicar de inmediato: si no, el JSON publico contradice al admin.
+      const pub = await maybePublish(store, slug);
+      return json(res, 200, { raffle, published: pub.published });
+    }
+
+    // POST /api/raffles/:slug/media -> sube una imagen al repo publico de la rifa
+    // y devuelve su URL raw, que luego el admin manda en el PATCH.
+    //
+    // Las fotos van al repo (no a la base ni a un bucket) por la misma razon que
+    // numbers.json: la rifa debe poder verificarse aunque el backend se apague.
+    // Un premio sin fotos alojadas en otra parte no es verificable.
+    if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "media") {
+      const user = requireLevel(await requireAuth(req, store), "ADMIN");
+      const slug = parts[2];
+      await store.getRaffle(slug);
+      const b = await readBody(req);
+      // Acepta data URL ("data:image/jpeg;base64,...") o base64 pelado: el admin
+      // manda lo que le da FileReader/canvas sin tener que recortarlo.
+      const crudo = String(b.base64 || b.data || "");
+      const base64 = crudo.includes(",") ? crudo.slice(crudo.indexOf(",") + 1) : crudo;
+      let buf;
+      try {
+        buf = Buffer.from(base64, "base64");
+      } catch {
+        throw httpError(400, "base64 invalido");
+      }
+      const img = await uploadImage(slug, buf);
+      await store.audit({
+        actor: user.email, action: "UPLOAD_MEDIA", entityType: "raffle", entityId: slug,
+        after: { path: img.path, bytes: img.bytes },
+      });
+      return json(res, 201, img);
     }
 
     // POST /api/raffles/:slug/publish -> fuerza la publicacion a GitHub.

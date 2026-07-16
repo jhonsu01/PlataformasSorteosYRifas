@@ -3,12 +3,13 @@
 // viven SOLO en el objeto `private` de cada compra y NUNCA salen al estado publico.
 
 import crypto from "node:crypto";
+import { httpError } from "./http-error.js";
+import {
+  normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
+} from "./raffle-media.js";
 
-export function httpError(status, message) {
-  const e = new Error(message);
-  e.status = status;
-  return e;
-}
+// Se re-exporta para no romper a quien ya lo importaba desde aqui.
+export { httpError };
 
 function cap(s) {
   const v = String(s || "").trim();
@@ -47,6 +48,12 @@ export function createStore({ reserveMinutes = 15 } = {}) {
       minSoldToDraw: cfg.minSoldToDraw ?? 0,
       status: cfg.status || "ACTIVE",
       winner: null,
+      // Premio mostrable. El total NO se guarda: se calcula al leer.
+      media: normalizeMedia(cfg.media),
+      prizeItems: normalizePrizeItems(cfg.prizeItems),
+      theme: normalizeTheme(cfg.theme),
+      publishedAt: null,
+      repoFullName: null,
     };
     raffles.set(cfg.slug, raffle);
     for (let n = cfg.numberRange.min; n <= cfg.numberRange.max; n++) {
@@ -232,6 +239,12 @@ export function createStore({ reserveMinutes = 15 } = {}) {
         priceCents: r.priceCents,
         numberRange: r.numberRange,
         winner: r.winner,
+        // Estado de publicacion: sin esto el admin no puede saber si una rifa ya
+        // esta en GitHub y muestra "Publicar" para siempre.
+        publishedAt: r.publishedAt || null,
+        repoFullName: r.repoFullName || null,
+        prizeTotalCents: prizeTotalCents(r.prizeItems),
+        cover: r.media?.cover || null,
       };
     });
   }
@@ -273,7 +286,39 @@ export function createStore({ reserveMinutes = 15 } = {}) {
       minSoldToDraw: r.minSoldToDraw,
       status: r.status,
       winner: r.winner,
+      media: r.media || {},
+      prizeItems: r.prizeItems || [],
+      // Calculado, nunca almacenado: no puede contradecir al desglose.
+      prizeTotalCents: prizeTotalCents(r.prizeItems),
+      theme: r.theme || {},
     };
+  }
+
+  /**
+   * Edita los campos "de vitrina" de una rifa ya creada.
+   *
+   * Deliberadamente NO deja tocar `numberRange`: los tickets ya existen y hay
+   * numeros vendidos. Cambiar el rango en caliente dejaria compras apuntando a
+   * numeros fuera de rango.
+   */
+  function updateRaffle(slug, patch) {
+    const r = getRaffle(slug);
+    if (patch.title !== undefined) r.title = String(patch.title).trim() || r.title;
+    if (patch.description !== undefined) r.description = String(patch.description).trim();
+    if (patch.prize !== undefined) r.prize = String(patch.prize).trim() || r.prize;
+    if (patch.media !== undefined) r.media = normalizeMedia(patch.media);
+    if (patch.prizeItems !== undefined) r.prizeItems = normalizePrizeItems(patch.prizeItems);
+    if (patch.theme !== undefined) r.theme = normalizeTheme(patch.theme);
+    return publicRaffle(slug);
+  }
+
+  // La escribe el publicador tras un push exitoso: es lo que permite al admin
+  // distinguir "nunca publicada" de "publicada" sin adivinar.
+  function markPublished(slug, repoFullName) {
+    const r = getRaffle(slug);
+    r.publishedAt = new Date().toISOString();
+    r.repoFullName = repoFullName || r.repoFullName;
+    return r;
   }
 
   function publicNumbers(slug) {
@@ -380,7 +425,8 @@ export function createStore({ reserveMinutes = 15 } = {}) {
 
   return {
     kind: "memory",
-    createRaffle, getRaffle, reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
+    createRaffle, getRaffle, updateRaffle, markPublished,
+    reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,
