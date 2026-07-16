@@ -338,3 +338,107 @@ test("postgres: sorteo aleatorio elige entre los vendidos", { skip }, async () =
     assert.equal(draw.mechanism, "RANDOM_FROM_SOLD");
   } finally { await store.close(); }
 });
+
+// --------------------------- Pago manual (v1.7.0) ---------------------------
+// El caso que cuesta dinero de verdad. Se prueba contra PostgreSQL porque la
+// guarda vive en SQL (el WHERE del reclamo y el del cron), no en JavaScript:
+// probarla solo en memoria no diria nada de produccion.
+
+const PNG_MINIMO = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+
+test("postgres CRITICO: la compra con comprobante no expira ni la roba otro", { skip }, async () => {
+  const store = await createPostgresStore(URL_DB, { reserveMinutes: -1 }); // nace vencida
+  try {
+    assertTestDatabase(URL_DB);
+    await store._pool.query("TRUNCATE tickets, purchases, raffles CASCADE");
+    await store.createRaffle(RAFFLE);
+    const p = await store.reserve("pg-test", 7, { firstName: "Ana", lastName: "Gomez" }, "MANUAL");
+    await store.attachReceipt(p.id, { bytes: PNG_MINIMO, mime: "image/png" });
+
+    // 1) El cron no la toca.
+    assert.equal(await store.expireReservations(), 0, "el cron no debe soltar un numero ya pagado");
+    assert.equal((await store.getPurchase(p.id)).status, "PENDING");
+
+    // 2) Y otro comprador tampoco puede reclamarlo, aunque la reserva este vencida.
+    await assert.rejects(
+      () => store.reserve("pg-test", 7, { firstName: "Otro", lastName: "Vivo" }, "MANUAL"),
+      /no disponible/,
+      "otro comprador NO puede quedarse con un numero que ya se pago",
+    );
+  } finally { await store.close(); }
+});
+
+test("postgres: sin comprobante, la reserva vencida si se libera", { skip }, async () => {
+  const store = await createPostgresStore(URL_DB, { reserveMinutes: -1 });
+  try {
+    assertTestDatabase(URL_DB);
+    await store._pool.query("TRUNCATE tickets, purchases, raffles CASCADE");
+    await store.createRaffle(RAFFLE);
+    const p = await store.reserve("pg-test", 8, { firstName: "Ana", lastName: "Gomez" }, "MANUAL");
+    assert.equal(await store.expireReservations(), 1);
+    assert.equal((await store.getPurchase(p.id)).status, "REJECTED");
+    const p2 = await store.reserve("pg-test", 8, { firstName: "Otro", lastName: "Comprador" }, "MANUAL");
+    assert.equal(p2.number, 8);
+  } finally { await store.close(); }
+});
+
+test("postgres: el comprobante se guarda intacto y no viaja en los listados", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await store.createRaffle(RAFFLE);
+    const p = await store.reserve("pg-test", 9, { firstName: "Ana", lastName: "Gomez" }, "MANUAL");
+    await store.attachReceipt(p.id, { bytes: PNG_MINIMO, mime: "image/png" });
+
+    // Los bytes vuelven tal cual (BYTEA de ida y vuelta).
+    const r = await store.getReceipt(p.id);
+    assert.deepEqual(r.bytes, PNG_MINIMO);
+    assert.equal(r.mime, "image/png");
+
+    // Pero el listado solo dice que existe: la imagen no cruza la red por fila.
+    const [fila] = await store.adminPurchases("pg-test", "PENDING");
+    assert.equal(fila.hasReceipt, true);
+    assert.ok(fila.receiptAt);
+    assert.equal(JSON.stringify(fila).includes("receipt_image"), false);
+    assert.equal("receiptImage" in fila, false);
+  } finally { await store.close(); }
+});
+
+test("postgres: la pasarela apagada rechaza la reserva WOMPI", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await store.createRaffle({ ...RAFFLE, gatewayEnabled: false });
+    await assert.rejects(
+      () => store.reserve("pg-test", 3, { firstName: "Ana", lastName: "Gomez" }, "WOMPI"),
+      /pasarela/i,
+    );
+    const p = await store.reserve("pg-test", 3, { firstName: "Ana", lastName: "Gomez" }, "MANUAL");
+    assert.equal(p.method, "MANUAL");
+  } finally { await store.close(); }
+});
+
+test("postgres: los medios de pago no se publican; drawAt si", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await store.createRaffle({
+      ...RAFFLE,
+      drawAt: "2026-08-20T00:00:00-05:00",
+      paymentMethods: [{ label: "Nequi", value: "3200000000", hint: "A nombre de Jhon S." }],
+    });
+    const pub = await store.publicRaffle("pg-test");
+    assert.equal(pub.drawAt, new Date("2026-08-20T00:00:00-05:00").toISOString());
+    assert.ok(!JSON.stringify(pub).includes("3200000000"), "la cuenta no se publica");
+
+    const info = await store.paymentInfo("pg-test");
+    assert.equal(info.paymentMethods[0].value, "3200000000");
+  } finally { await store.close(); }
+});
+
+test("postgres: la base rechaza un sorteo anterior al cierre", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await assert.rejects(
+      () => store.createRaffle({ ...RAFFLE, drawAt: "2026-08-01T00:00:00-05:00" }), // antes de ends_at
+      /antes/i,
+    );
+  } finally { await store.close(); }
+});

@@ -10,6 +10,11 @@ import {
 
 export const revalidate = 60;
 
+const fecha = (d) =>
+  new Date(d).toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" });
+const fechaLarga = (d) =>
+  new Date(d).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
 export async function generateStaticParams() {
   const rifas = await listRifas();
   return rifas.map((r) => ({ slug: r.slug }));
@@ -100,10 +105,16 @@ export default async function RifaPage({ params }) {
             )}
             {raffle.endsAt && (
               <div className="stat">
-                <div className="stat-n" style={{ fontSize: "1.05rem" }}>
-                  {new Date(raffle.endsAt).toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" })}
-                </div>
+                <div className="stat-n" style={{ fontSize: "1.05rem" }}>{fecha(raffle.endsAt)}</div>
                 <div className="stat-l">Cierre de ventas</div>
+              </div>
+            )}
+            {/* La fecha del sorteo es un hecho DISTINTO del cierre: las ventas
+                cierran y la loteria externa juega despues. */}
+            {raffle.drawAt && (
+              <div className="stat">
+                <div className="stat-n" style={{ fontSize: "1.05rem" }}>{fecha(raffle.drawAt)}</div>
+                <div className="stat-l">Fecha del sorteo</div>
               </div>
             )}
           </div>
@@ -114,7 +125,15 @@ export default async function RifaPage({ params }) {
 
           {raffle.endsAt && raffle.status === "ACTIVE" && (
             <div style={{ marginTop: 26 }}>
+              {/* El contador va al CIERRE, no al sorteo: es la fecha que le
+                  importa a quien todavia puede comprar. */}
+              <div className="stat-l" style={{ marginBottom: 8 }}>Cierra en</div>
               <Countdown endsAt={raffle.endsAt} />
+              {raffle.drawAt && (
+                <p className="small mut" style={{ marginTop: 12, marginBottom: 0 }}>
+                  Se juega el <strong style={{ color: "var(--txt)" }}>{fechaLarga(raffle.drawAt)}</strong>
+                </p>
+              )}
             </div>
           )}
         </div>

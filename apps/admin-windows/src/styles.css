@@ -311,8 +311,62 @@ button:hover { filter: brightness(1.05); }
 }
 .check { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 
+/* --------------------------- Fechas y pagos --------------------------- */
+
+.fechas-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+.fechas-grid label { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); gap: 6px; }
+.fechas-grid .inp { margin-top: 0; }
+
+.switches { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.switches .check { font-size: 13px; color: var(--ink); }
+
+.pagos-edit { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.pago-edit {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1.4fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.pago-edit .inp { margin-top: 0; }
+
+/* --------------------------- Ganador y comprobante --------------------------- */
+
+.approval.ganador {
+  background: linear-gradient(90deg, #fffbeb, #ffffff);
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.25);
+}
+
+.badge-win {
+  background: var(--gold);
+  color: #78350f;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 20px;
+  vertical-align: middle;
+}
+
+.win-nota { font-size: 12px; color: #78350f; text-align: right; line-height: 1.35; }
+
+.receipt-img {
+  max-width: 100%;
+  max-height: 65vh;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  margin: 0 auto;
+}
+
 @media (max-width: 900px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
   .item-edit { flex-direction: column; }
+  .fechas-grid { grid-template-columns: 1fr; }
+  .pago-edit { grid-template-columns: 1fr; }
 }

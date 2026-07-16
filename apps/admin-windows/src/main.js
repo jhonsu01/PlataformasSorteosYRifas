@@ -353,6 +353,14 @@ VIEWS.panel = async (el) => {
  * viene del backend (`publishedAt` / `repoFullName`), que es donde tiene que
  * estar: un dato que solo existe en la memoria de una ventana no es un dato.
  */
+/** Fecha por defecto del formulario: dentro de N dias, a las 8 p. m. */
+function fechaPorDefecto(dias) {
+  const d = new Date(Date.now() + dias * 864e5);
+  d.setHours(20, 0, 0, 0);
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
 function repoLinea(r) {
   if (!r.publishedAt) return `<span class="muted small">Sin publicar</span>`;
   const url = `https://github.com/${r.repoFullName}`;
@@ -399,6 +407,8 @@ VIEWS.rifas = async (el) => {
         <label>Número máximo<input name="max" type="number" min="0" value="999" required /></label>
         <label>Mínimo para sortear<input name="minSold" type="number" min="0" value="20" /></label>
         <label>Descripción<input name="description" placeholder="Opcional" /></label>
+        <label>Cierre de ventas<input name="endsAt" type="datetime-local" required value="${esc(fechaPorDefecto(30))}" /></label>
+        <label>Fecha del sorteo<input name="drawAt" type="datetime-local" value="${esc(fechaPorDefecto(30))}" /></label>
         <div class="form-actions"><button type="submit" class="btn-approve">Crear rifa</button></div>
       </form>
     </section>`;
@@ -441,6 +451,8 @@ VIEWS.rifas = async (el) => {
       priceCents: Math.round(Number(f.price.value) * 100),
       numberRange: { min: Number(f.min.value), max: Number(f.max.value) },
       minSoldToDraw: Number(f.minSold.value || 0),
+      endsAt: localAIso(f.endsAt.value),
+      drawAt: localAIso(f.drawAt.value),
     };
     try {
       await api("/api/raffles", { method: "POST", body });
@@ -514,14 +526,37 @@ async function subirImagen(slug, file) {
 
 let premioEstado = null; // { slug, media, prizeItems, theme }
 
+/** ISO -> valor para <input type="datetime-local"> en hora LOCAL del admin. */
+function isoALocal(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  // toISOString() daria UTC y el admin veria una hora corrida (Colombia = -5).
+  // Se resta el desfase para que el input muestre la hora que el humano espera.
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+/** Valor de <input type="datetime-local"> (hora local) -> ISO con zona. */
+const localAIso = (v) => (v ? new Date(v).toISOString() : null);
+
 async function abrirEditorPremio(slug) {
   try {
-    const raffle = await api(`/api/raffles/${slug}/public/raffle.json`);
+    // Los medios de pago NO estan en raffle.json (no se publican): se piden aparte.
+    const [raffle, pago] = await Promise.all([
+      api(`/api/raffles/${slug}/public/raffle.json`),
+      api(`/api/raffles/${slug}/payment`),
+    ]);
     premioEstado = {
       slug,
       media: { cover: raffle.media?.cover || "", gallery: raffle.media?.gallery || [], youtubeId: raffle.media?.youtubeId || "" },
       prizeItems: (raffle.prizeItems || []).map((i) => ({ ...i })),
       theme: { accent: raffle.theme?.accent || "" },
+      endsAt: raffle.endsAt || "",
+      drawAt: raffle.drawAt || "",
+      minSoldToDraw: raffle.minSoldToDraw ?? 0,
+      paymentMethods: (pago.paymentMethods || []).map((m) => ({ ...m })),
+      gatewayEnabled: pago.gatewayEnabled !== false,
+      manualEnabled: pago.manualEnabled !== false,
     };
     pintarEditorPremio();
   } catch (e) {
@@ -552,6 +587,54 @@ function pintarEditorPremio() {
       </header>
 
       <div class="modal-body">
+        <h3>Fechas</h3>
+        <p class="muted small">
+          Las ventas cierran y la lotería juega después: son dos fechas distintas.
+          Si no se vende el mínimo, aplaza el sorteo cambiando la fecha aquí.
+        </p>
+        <div class="fechas-grid">
+          <label>Cierre de ventas
+            <input type="datetime-local" class="inp" id="pm-ends" value="${esc(isoALocal(s.endsAt))}" />
+          </label>
+          <label>Fecha del sorteo
+            <input type="datetime-local" class="inp" id="pm-draw" value="${esc(isoALocal(s.drawAt))}" />
+          </label>
+          <label>Mínimo para sortear
+            <input type="number" min="0" class="inp" id="pm-minsold" value="${Number(s.minSoldToDraw) || 0}" />
+          </label>
+        </div>
+
+        <h3>Cómo se paga</h3>
+        <p class="muted small">Si apagas los dos, nadie podrá comprar números.</p>
+        <div class="switches">
+          <label class="check">
+            <input type="checkbox" id="pm-gw" ${s.gatewayEnabled ? "checked" : ""} />
+            Pasarela de pagos (Wompi) — cobro automático
+          </label>
+          <label class="check">
+            <input type="checkbox" id="pm-mn" ${s.manualEnabled ? "checked" : ""} />
+            Pagos manuales — el comprador sube el comprobante y tú lo verificas
+          </label>
+        </div>
+
+        <h3>Medios de pago manual</h3>
+        <p class="muted small">
+          Lo que el comprador ve y copia para pagarte. <b>No se publican en GitHub</b>:
+          el historial es público y permanente, así que una cuenta ahí quedaría para
+          siempre. Se los entrega el backend a quien va a comprar.
+        </p>
+        <div class="pagos-edit">
+          ${s.paymentMethods.map((m, i) => `
+            <div class="pago-edit">
+              <input class="inp" data-plabel="${i}" placeholder="Nequi" value="${esc(m.label)}" />
+              <input class="inp" data-pvalue="${i}" placeholder="3200000000" value="${esc(m.value)}" />
+              <input class="inp" data-phint="${i}" placeholder="A nombre de… (opcional)" value="${esc(m.hint || "")}" />
+              <button class="btn-reject" data-pdel="${i}">Quitar</button>
+            </div>`).join("")}
+          ${s.paymentMethods.length === 0 ? `<p class="muted small">Sin medios de pago. Añade al menos uno si aceptas pagos manuales.</p>` : ""}
+        </div>
+        <button class="btn-secondary" id="pm-addpago">+ Añadir medio de pago</button>
+
         <h3>Portada</h3>
         <p class="muted small">Imagen grande de la rifa. Se usa también al compartir el enlace por WhatsApp.</p>
         <div class="media-row">
@@ -636,6 +719,20 @@ function pintarEditorPremio() {
     pintarEditorPremio();
   };
 
+  $("#pm-addpago").onclick = () => {
+    volcarCampos();
+    s.paymentMethods.push({ label: "", value: "", hint: "" });
+    pintarEditorPremio();
+  };
+
+  m.querySelectorAll("[data-pdel]").forEach((b) => {
+    b.onclick = () => {
+      volcarCampos();
+      s.paymentMethods.splice(Number(b.dataset.pdel), 1);
+      pintarEditorPremio();
+    };
+  });
+
   m.querySelectorAll("[data-idel]").forEach((b) => {
     b.onclick = () => {
       volcarCampos();
@@ -715,13 +812,35 @@ function volcarCampos() {
     s.prizeItems[Number(i.dataset.ival)].valueCents = Math.round(Number(i.value || 0) * 100);
   });
   m.querySelectorAll("[data-ifeat]").forEach((i) => { s.prizeItems[Number(i.dataset.ifeat)].featured = i.checked; });
+  m.querySelectorAll("[data-plabel]").forEach((i) => { s.paymentMethods[Number(i.dataset.plabel)].label = i.value; });
+  m.querySelectorAll("[data-pvalue]").forEach((i) => { s.paymentMethods[Number(i.dataset.pvalue)].value = i.value; });
+  m.querySelectorAll("[data-phint]").forEach((i) => { s.paymentMethods[Number(i.dataset.phint)].hint = i.value; });
   const yt = $("#pm-yt");
   if (yt) s.media.youtubeId = yt.value.trim();
+  const ends = $("#pm-ends"); if (ends) s.endsAt = localAIso(ends.value);
+  const draw = $("#pm-draw"); if (draw) s.drawAt = localAIso(draw.value);
+  const ms = $("#pm-minsold"); if (ms) s.minSoldToDraw = Number(ms.value || 0);
+  const gw = $("#pm-gw"); if (gw) s.gatewayEnabled = gw.checked;
+  const mn = $("#pm-mn"); if (mn) s.manualEnabled = mn.checked;
 }
 
 async function guardarPremio() {
   volcarCampos();
   const s = premioEstado;
+  const pagos = s.paymentMethods.filter((m) => m.label.trim() && m.value.trim());
+
+  // Avisos ANTES de guardar: son configuraciones validas para el backend pero que
+  // dejan la rifa sin poder venderse. Mejor detenerlo aqui que descubrirlo cuando
+  // un comprador no pueda pagar.
+  if (!s.gatewayEnabled && !s.manualEnabled) {
+    toast("Con los dos métodos apagados nadie podrá comprar números.", false);
+    return;
+  }
+  if (s.manualEnabled && pagos.length === 0) {
+    toast("Aceptas pagos manuales pero no hay ningún medio de pago: el comprador no sabría a dónde pagarte.", false);
+    return;
+  }
+
   const b = $("#pm-save");
   b.disabled = true; b.textContent = "Guardando…";
   try {
@@ -737,9 +856,15 @@ async function guardarPremio() {
         },
         prizeItems: items,
         theme: s.theme.accent ? { accent: s.theme.accent } : {},
+        endsAt: s.endsAt || undefined,
+        drawAt: s.drawAt,
+        minSoldToDraw: s.minSoldToDraw,
+        paymentMethods: pagos,
+        gatewayEnabled: s.gatewayEnabled,
+        manualEnabled: s.manualEnabled,
       },
     });
-    toast("Premio guardado y publicado");
+    toast("Guardado y publicado");
     cerrarEditorPremio();
     render();
   } catch (e) {
@@ -751,15 +876,72 @@ async function guardarPremio() {
 // --------------------------- Vista: Comprobantes ---------------------------
 let comprobantesTab = "PENDING";
 
+/**
+ * Muestra el pantallazo del pago.
+ *
+ * No se puede poner la URL en un <img src>: el endpoint exige el token y un <img>
+ * no manda cabeceras. Se descarga autenticado y se pinta desde un blob local,
+ * que ademas evita que la imagen quede en la cache del webview.
+ */
+async function verComprobante(purchaseId) {
+  const m = $("#modal");
+  m.classList.add("show");
+  m.innerHTML = `<div class="modal-card"><div class="modal-body"><p class="muted">Cargando comprobante…</p></div></div>`;
+  let url;
+  try {
+    const res = await fetch(`${cfg.backendUrl.replace(/\/$/, "")}/api/purchases/${purchaseId}/receipt`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) throw new Error(`No se pudo cargar el comprobante (HTTP ${res.status})`);
+    url = URL.createObjectURL(await res.blob());
+    m.innerHTML = `
+      <div class="modal-card">
+        <header class="modal-head">
+          <div>
+            <h2>Comprobante del pago</h2>
+            <p class="muted small">Dato privado: no se publica ni sale del panel.</p>
+          </div>
+          <button class="btn-link" id="rc-cerrar">Cerrar</button>
+        </header>
+        <div class="modal-body" style="text-align:center">
+          <img src="${url}" alt="Comprobante del pago" class="receipt-img" />
+        </div>
+      </div>`;
+    const cerrar = () => {
+      // Liberar el blob: si no, la imagen se queda en memoria toda la sesion.
+      URL.revokeObjectURL(url);
+      m.innerHTML = ""; m.classList.remove("show");
+    };
+    $("#rc-cerrar").onclick = cerrar;
+    m.onclick = (e) => { if (e.target === m) cerrar(); };
+  } catch (e) {
+    if (url) URL.revokeObjectURL(url);
+    m.innerHTML = ""; m.classList.remove("show");
+    toast(e.message, false);
+  }
+}
+
 VIEWS.comprobantes = async (el) => {
   await checkHealth();
   if (!backendOnline) { el.innerHTML = backendBanner(); return; }
-  const [{ purchases }, raffles] = await Promise.all([
+  const [{ purchases }, raffles, raffle] = await Promise.all([
     api(`/api/raffles/${cfg.raffleSlug}/purchases?status=${comprobantesTab}`),
     api("/api/raffles"),
+    api(`/api/raffles/${cfg.raffleSlug}/public/raffle.json`),
   ]);
   const max = raffles.raffles.find((r) => r.slug === cfg.raffleSlug)?.numberRange?.max ?? 0;
   const esPend = comprobantesTab === "PENDING";
+
+  // El ganador de PRIMERO: cuando hay cientos de vendidos, buscarlo a mano en la
+  // lista es absurdo. Es el unico registro que el administrador va a querer ver.
+  const numGanador = raffle.winner?.number ?? null;
+  const lista = [...purchases].sort((a, b) => {
+    if (a.number === numGanador) return -1;
+    if (b.number === numGanador) return 1;
+    // Los que ya mandaron comprobante van antes: son los que esperan respuesta.
+    if (esPend && a.hasReceipt !== b.hasReceipt) return a.hasReceipt ? -1 : 1;
+    return new Date(a.purchasedAt) - new Date(b.purchasedAt);
+  });
 
   el.innerHTML = `
     <header class="topbar"><div><h1>Comprobantes</h1><p class="muted">${esc(cfg.raffleSlug)}</p></div></header>
@@ -772,28 +954,45 @@ VIEWS.comprobantes = async (el) => {
         ? "La imagen del comprobante es de acceso privado (nunca pública). Aprobar marca el número como vendido y publica el estado público."
         : "Anular libera el número y lo quita del estado público. <b>No devuelve el dinero</b>: si se pagó con Wompi, la devolución se hace en su panel."}</p>
       <ul class="approvals">
-        ${purchases.length === 0 ? `<li class="muted">${esPend ? "No hay comprobantes pendientes. 🎉" : "Aún no hay números vendidos."}</li>` : ""}
-        ${purchases.map((p) => `
-          <li class="approval" data-id="${esc(p.id)}">
+        ${lista.length === 0 ? `<li class="muted">${esPend ? "No hay comprobantes pendientes. 🎉" : "Aún no hay números vendidos."}</li>` : ""}
+        ${lista.map((p) => {
+          const esGanador = p.number === numGanador;
+          return `
+          <li class="approval ${esGanador ? "ganador" : ""}" data-id="${esc(p.id)}">
             <div>
-              <div class="who">${esc(p.buyer)} · Número ${padNum(p.number, max)}</div>
+              <div class="who">
+                ${esGanador ? `<span class="badge-win">🏆 GANADOR</span> ` : ""}
+                ${esc(p.buyer)} · Número ${padNum(p.number, max)}
+              </div>
               <div class="meta">${esc(p.method)} · ${p.contact?.phone ? esc(p.contact.phone) : "sin teléfono"} · ${new Date(p.purchasedAt).toLocaleString("es-CO")}</div>
-              ${p.receiptUrl ? `<div class="meta">🧾 comprobante adjunto (privado)</div>` : ""}
+              ${p.hasReceipt
+                ? `<button class="btn-link" data-receipt="${esc(p.id)}">🧾 Ver comprobante del pago</button>`
+                : p.method === "MANUAL" ? `<div class="meta">⏳ Sin comprobante todavía</div>` : ""}
             </div>
             <div class="actions">
-              ${esPend ? `
+              ${esGanador
+                // No se ofrece anular al ganador: el backend lo rechaza igual
+                // (dejaria draw.json apuntando a un numero sin vender), asi que
+                // el boton solo serviria para dar un error.
+                ? `<span class="win-nota">Ganador declarado<br/><span class="muted small">no se puede anular</span></span>`
+                : esPend ? `
                 <button class="btn-approve" data-approve="${esc(p.id)}">Aprobar</button>
                 <button class="btn-reject" data-reject="${esc(p.id)}">Rechazar</button>
               ` : `
                 <button class="btn-reject" data-void="${esc(p.id)}" data-num="${padNum(p.number, max)}">Anular venta</button>
               `}
             </div>
-          </li>`).join("")}
+          </li>`;
+        }).join("")}
       </ul>
     </section>`;
 
   el.querySelectorAll("[data-tab]").forEach((b) => {
     b.onclick = () => { comprobantesTab = b.dataset.tab; render(); };
+  });
+
+  el.querySelectorAll("[data-receipt]").forEach((b) => {
+    b.onclick = () => verComprobante(b.dataset.receipt);
   });
 
   el.querySelectorAll("[data-void]").forEach((b) => {

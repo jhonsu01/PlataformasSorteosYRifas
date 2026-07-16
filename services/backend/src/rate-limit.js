@@ -53,4 +53,8 @@ export const LIMITS = {
   // Generoso: Wompi reintenta los eventos y no queremos perder pagos.
   // La firma ya protege la autenticidad; esto solo frena inundaciones.
   webhook: { name: "webhook", limit: config.rateLimit.webhook, windowSec: 60 },
+  // Subir el comprobante es abierto (quien compra no tiene cuenta) y cada intento
+  // escribe ~1 MB en la base. Holgado para quien se equivoca de foto y reintenta,
+  // pero cerrado a un script que quiera llenar el disco.
+  receipt: { name: "receipt", limit: config.rateLimit.receipt, windowSec: 600 },
 };

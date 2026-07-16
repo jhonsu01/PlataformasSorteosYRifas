@@ -39,8 +39,14 @@ export function getStore() {
   if (!storePromise) {
     storePromise = (async () => {
       const store = config.databaseUrl
-        ? await createPostgresStore(config.databaseUrl, { reserveMinutes: config.reserveMinutes })
-        : createStore({ reserveMinutes: config.reserveMinutes });
+        ? await createPostgresStore(config.databaseUrl, {
+            reserveMinutes: config.reserveMinutes,
+            manualReserveMinutes: config.manualReserveMinutes,
+          })
+        : createStore({
+            reserveMinutes: config.reserveMinutes,
+            manualReserveMinutes: config.manualReserveMinutes,
+          });
       console.log(`[backend] almacenamiento: ${store.kind}${store.kind === "memory" ? " (sin persistencia)" : ""}`);
       if (jwtSecretIsEphemeral) {
         if (config.databaseUrl) {
@@ -71,9 +77,15 @@ async function ensureDemo(store) {
   if (exists) return;
 
   await store.createRaffle(DEMO);
+  // PNG 1x1 real: el comprobante ahora son BYTES validados por su firma, no una
+  // URL de mentira. Sirve para que la demo tenga algo que abrir en el admin.
+  const COMPROBANTE_DEMO = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
   const mk = async (n, firstName, lastName, phone, approve) => {
     const p = await store.reserve(DEMO.slug, n, { firstName, lastName, phone, email: `${firstName.toLowerCase()}@correo.com` }, "MANUAL");
-    await store.attachReceipt(p.id, `private://comprobantes/${p.id}.jpg`);
+    await store.attachReceipt(p.id, { bytes: COMPROBANTE_DEMO, mime: "image/png" });
     if (approve) await store.approve(p.id, { approvedBy: "seed" });
   };
   await mk(7, "Juan", "Sanchez", "3001112233", true);
@@ -254,9 +266,13 @@ export async function handler(req, res) {
         startsAt: b.startsAt || new Date().toISOString(),
         endsAt: b.endsAt || new Date(Date.now() + 30 * 864e5).toISOString(),
         minSoldToDraw: Number(b.minSoldToDraw || 0), status: "ACTIVE",
+        // Fecha del sorteo: distinta del cierre de ventas. Opcional al crear.
+        drawAt: b.drawAt || null,
         // Opcionales: se puede crear la rifa desnuda y vestirla despues con PATCH
         // (que es el flujo del admin, porque subir fotos exige que el repo exista).
         media: b.media, prizeItems: b.prizeItems, theme: b.theme,
+        paymentMethods: b.paymentMethods,
+        gatewayEnabled: b.gatewayEnabled, manualEnabled: b.manualEnabled,
       });
       await store.audit({ actor: user.email, action: "CREATE_RAFFLE", entityType: "raffle", entityId: raffle.slug, after: raffle });
       const pub = await maybePublish(store, raffle.slug);
@@ -314,10 +330,52 @@ export async function handler(req, res) {
       });
     }
 
+    // POST /api/purchases/:id/receipt -> el comprador sube el pantallazo del pago.
+    //
+    // Abierto (quien compra no tiene cuenta) pero acotado: hay que conocer el id
+    // de la compra (un UUID), solo se acepta mientras este PENDING, y va con
+    // rate limit. Al adjuntarlo, el numero queda RETENIDO hasta que un humano
+    // decida: ni el cron ni otro comprador pueden quitarselo.
     if (M === "POST" && parts[0] === "api" && parts[1] === "purchases" && parts[3] === "receipt") {
+      await enforceRateLimit(store, req, LIMITS.receipt);
       const b = await readBody(req);
-      const p = await store.attachReceipt(parts[2], b.receiptUrl);
-      return json(res, 200, { purchaseId: p.id, status: p.status });
+      const crudo = String(b.base64 || b.data || "");
+      const base64 = crudo.includes(",") ? crudo.slice(crudo.indexOf(",") + 1) : crudo;
+      let bytes;
+      try {
+        bytes = Buffer.from(base64, "base64");
+      } catch {
+        throw httpError(400, "base64 invalido");
+      }
+      const p = await store.attachReceipt(parts[2], { bytes, mime: b.mime });
+      return json(res, 200, {
+        purchaseId: p.id, status: p.status, receiptAt: p.receiptAt,
+        mensaje: "Comprobante recibido. Tu número queda reservado hasta que un administrador lo verifique.",
+      });
+    }
+
+    // GET /api/purchases/:id/receipt -> la imagen del comprobante.
+    // PRIVADO: lleva nombre completo, banco y a veces el saldo de quien pago.
+    if (M === "GET" && parts[0] === "api" && parts[1] === "purchases" && parts[3] === "receipt") {
+      requireLevel(await requireAuth(req, store), "OPERATOR");
+      const { bytes, mime } = await store.getReceipt(parts[2]);
+      cors(res);
+      res.writeHead(200, {
+        "Content-Type": mime,
+        "Content-Length": bytes.length,
+        // Nunca en cache de intermediarios: es dato privado.
+        "Cache-Control": "private, no-store",
+      });
+      return res.end(bytes);
+    }
+
+    // GET /api/raffles/:slug/payment -> como pagarle a esta rifa.
+    //
+    // Publico a proposito: quien va a comprar necesita ver la cuenta. Pero se
+    // sirve por la API y NO se publica al repo: el historial de git es inmutable
+    // y un numero de cuenta commiteado ahi queda para siempre.
+    if (M === "GET" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "payment") {
+      return json(res, 200, await store.paymentInfo(parts[2]));
     }
 
     // Aprobar vende el numero: solo ADMIN+ (un abierto aqui = numeros vendidos sin pagar).

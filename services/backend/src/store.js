@@ -7,6 +7,9 @@ import { httpError } from "./http-error.js";
 import {
   normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
 } from "./raffle-media.js";
+import {
+  normalizePaymentMethods, validarComprobante, assertMetodoPermitido, assertFechas,
+} from "./payments.js";
 
 // Se re-exporta para no romper a quien ya lo importaba desde aqui.
 export { httpError };
@@ -23,8 +26,12 @@ export function pseudonym(firstName, lastName) {
   return l ? `${f} ${l[0].toUpperCase()}.` : f;
 }
 
-export function createStore({ reserveMinutes = 15 } = {}) {
+export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) {
   const reserveMs = reserveMinutes * 60 * 1000;
+  // El pago manual es un tramite humano (abrir Nequi, pagar, capturar, subir):
+  // por defecto 4x la ventana de la pasarela. Si reserveMinutes es 0 (pruebas),
+  // manual tambien es 0 y la reserva nace vencida a proposito.
+  const manualReserveMs = (manualReserveMinutes ?? reserveMinutes * 4) * 60 * 1000;
   const raffles = new Map(); // slug -> raffle
   const tickets = new Map(); // `${slug}#${n}` -> ticket
   const purchases = new Map(); // id -> purchase
@@ -35,6 +42,7 @@ export function createStore({ reserveMinutes = 15 } = {}) {
 
   function createRaffle(cfg) {
     if (raffles.has(cfg.slug)) return raffles.get(cfg.slug);
+    assertFechas(cfg.endsAt, cfg.drawAt);
     const raffle = {
       slug: cfg.slug,
       title: cfg.title,
@@ -45,9 +53,15 @@ export function createStore({ reserveMinutes = 15 } = {}) {
       numberRange: cfg.numberRange,
       startsAt: cfg.startsAt,
       endsAt: cfg.endsAt,
+      // Fecha del SORTEO: distinta del cierre de ventas. Se juega despues.
+      drawAt: cfg.drawAt || null,
       minSoldToDraw: cfg.minSoldToDraw ?? 0,
       status: cfg.status || "ACTIVE",
       winner: null,
+      // Medios de pago: NO se publican (ver payments.js). Los sirve la API.
+      paymentMethods: normalizePaymentMethods(cfg.paymentMethods),
+      gatewayEnabled: cfg.gatewayEnabled !== false,
+      manualEnabled: cfg.manualEnabled !== false,
       // Premio mostrable. El total NO se guarda: se calcula al leer.
       media: normalizeMedia(cfg.media),
       prizeItems: normalizePrizeItems(cfg.prizeItems),
@@ -73,26 +87,35 @@ export function createStore({ reserveMinutes = 15 } = {}) {
   // Reserva ATOMICA: solo pasa de FREE -> RESERVED. Como Node ejecuta el event
   // loop de forma sincronica, el check-and-set no tiene condicion de carrera.
   function reserve(slug, number, buyer, method = "MANUAL") {
-    getRaffle(slug);
+    const raffle = getRaffle(slug);
+    // Se valida en el servidor, no solo escondiendo el boton en la app.
+    assertMetodoPermitido(raffle, method);
     const t = tickets.get(key(slug, number));
     if (!t) throw httpError(404, "Numero fuera de rango");
     if (t.status === "RESERVED" && t.reservedUntil && t.reservedUntil < Date.now()) {
-      // reserva expirada: liberar antes de evaluar
-      releaseTicket(t);
+      // Reserva vencida: liberar antes de evaluar. PERO nunca si ya mandaron el
+      // comprobante: ese numero esta pagado y esperando revision, y soltarlo aqui
+      // se lo entregaria al siguiente que lo pida. La misma regla que en
+      // expireReservations; este es el otro camino por el que se libera un ticket.
+      const previa = t.purchaseId && purchases.get(t.purchaseId);
+      if (!previa?.receiptAt) releaseTicket(t);
     }
     if (t.status !== "FREE") throw httpError(409, "Numero no disponible");
 
     const id = crypto.randomUUID();
     const reference = `RAFFLE-${slug}-NUM-${number}-${id}`;
     t.status = "RESERVED";
-    t.reservedUntil = Date.now() + reserveMs;
+    // El pago manual necesita mas tiempo: hay que abrir Nequi, pagar, tomar el
+    // pantallazo y volver. Con la ventana de la pasarela (inmediata) se le
+    // caeria el numero a medio pagar.
+    t.reservedUntil = Date.now() + (method === "MANUAL" ? manualReserveMs : reserveMs);
     t.purchaseId = id;
 
     const purchase = {
       id, slug, number, method,
       status: "PENDING",
       reference,
-      amountCents: getRaffle(slug).priceCents,
+      amountCents: raffle.priceCents,
       buyerPublic: pseudonym(buyer.firstName, buyer.lastName),
       // datos privados: jamas en la salida publica
       private: {
@@ -100,7 +123,10 @@ export function createStore({ reserveMinutes = 15 } = {}) {
         email: buyer.email || null,
         document: buyer.document || null,
       },
-      receiptUrl: null,       // comprobante manual (almacenamiento privado)
+      // Comprobante manual: bytes PRIVADOS. Nunca sale al estado publico ni al
+      // repo de la rifa; solo lo ve un administrador autenticado.
+      receipt: null,          // { bytes, mime }
+      receiptAt: null,
       wompiTransactionId: null,
       purchasedAt: new Date().toISOString(),
       verifiedAt: null,
@@ -124,10 +150,21 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     return p;
   }
 
-  function attachReceipt(purchaseId, receiptUrl) {
+  /**
+   * Adjunta el comprobante del pago manual (bytes PRIVADOS).
+   *
+   * A partir de aqui el numero queda retenido hasta que un humano decida:
+   * expireReservations respeta toda compra con `receiptAt`.
+   */
+  function attachReceipt(purchaseId, { bytes, mime } = {}) {
     const p = purchases.get(purchaseId);
     if (!p) throw httpError(404, "Compra no encontrada");
-    p.receiptUrl = receiptUrl; // privado
+    if (p.status !== "PENDING") {
+      throw httpError(409, `La compra ya esta ${p.status}: no admite comprobante`);
+    }
+    const real = validarComprobante(bytes);
+    p.receipt = { bytes, mime: real || mime };
+    p.receiptAt = new Date().toISOString();
     return p;
   }
 
@@ -263,7 +300,11 @@ export function createStore({ reserveMinutes = 15 } = {}) {
         status: p.status,
         purchasedAt: p.purchasedAt,
         verifiedAt: p.verifiedAt,
-        receiptUrl: p.receiptUrl,
+        // Solo SI hay comprobante y cuando llego. Los bytes se piden aparte
+        // (GET /api/purchases/:id/receipt): meter la imagen en el listado
+        // cargaria megas por cada fila que el admin quizas ni abre.
+        hasReceipt: Boolean(p.receiptAt),
+        receiptAt: p.receiptAt || null,
         contact: p.private,
       }));
   }
@@ -283,6 +324,7 @@ export function createStore({ reserveMinutes = 15 } = {}) {
       numberRange: r.numberRange,
       startsAt: r.startsAt,
       endsAt: r.endsAt,
+      drawAt: r.drawAt || null,
       minSoldToDraw: r.minSoldToDraw,
       status: r.status,
       winner: r.winner,
@@ -291,6 +333,31 @@ export function createStore({ reserveMinutes = 15 } = {}) {
       // Calculado, nunca almacenado: no puede contradecir al desglose.
       prizeTotalCents: prizeTotalCents(r.prizeItems),
       theme: r.theme || {},
+      // OJO: paymentMethods NO va aqui. Esta forma se commitea a un repo publico
+      // e inmutable; un numero de cuenta ahi queda para siempre. Se sirven por
+      // la API (paymentInfo), que es lo que necesita quien va a comprar.
+    };
+  }
+
+  /**
+   * Datos para pagar. Publico (quien compra necesita verlos) pero servido por la
+   * API y NO publicado al repo, a diferencia del resto del estado.
+   */
+  /** Bytes del comprobante. Solo para roles autorizados: es dato privado. */
+  function getReceipt(purchaseId) {
+    const p = purchases.get(purchaseId);
+    if (!p) throw httpError(404, "Compra no encontrada");
+    if (!p.receipt) throw httpError(404, "Esta compra no tiene comprobante");
+    return p.receipt;
+  }
+
+  function paymentInfo(slug) {
+    const r = getRaffle(slug);
+    return {
+      slug: r.slug,
+      gatewayEnabled: r.gatewayEnabled !== false,
+      manualEnabled: r.manualEnabled !== false,
+      paymentMethods: r.paymentMethods || [],
     };
   }
 
@@ -303,12 +370,26 @@ export function createStore({ reserveMinutes = 15 } = {}) {
    */
   function updateRaffle(slug, patch) {
     const r = getRaffle(slug);
+    // Las fechas se validan como PAR: mandar solo una debe cotejarse contra la
+    // que ya esta guardada, o se podria dejar el sorteo antes del cierre.
+    const endsAt = patch.endsAt !== undefined ? patch.endsAt : r.endsAt;
+    const drawAt = patch.drawAt !== undefined ? patch.drawAt : r.drawAt;
+    assertFechas(endsAt, drawAt);
+
     if (patch.title !== undefined) r.title = String(patch.title).trim() || r.title;
     if (patch.description !== undefined) r.description = String(patch.description).trim();
     if (patch.prize !== undefined) r.prize = String(patch.prize).trim() || r.prize;
     if (patch.media !== undefined) r.media = normalizeMedia(patch.media);
     if (patch.prizeItems !== undefined) r.prizeItems = normalizePrizeItems(patch.prizeItems);
     if (patch.theme !== undefined) r.theme = normalizeTheme(patch.theme);
+    if (patch.endsAt !== undefined) r.endsAt = patch.endsAt;
+    // Posponer el sorteo es una operacion legitima: si no se vende el minimo,
+    // la Guia manda aplazar en vez de sortear.
+    if (patch.drawAt !== undefined) r.drawAt = patch.drawAt || null;
+    if (patch.minSoldToDraw !== undefined) r.minSoldToDraw = Number(patch.minSoldToDraw) || 0;
+    if (patch.paymentMethods !== undefined) r.paymentMethods = normalizePaymentMethods(patch.paymentMethods);
+    if (patch.gatewayEnabled !== undefined) r.gatewayEnabled = Boolean(patch.gatewayEnabled);
+    if (patch.manualEnabled !== undefined) r.manualEnabled = Boolean(patch.manualEnabled);
     return publicRaffle(slug);
   }
 
@@ -334,12 +415,22 @@ export function createStore({ reserveMinutes = 15 } = {}) {
     return { version: new Date().toISOString(), sold };
   }
 
+  /**
+   * Libera las reservas vencidas.
+   *
+   * NUNCA toca una compra con comprobante adjunto, por vencida que este.
+   * Sin esa guarda, el comprador paga por Nequi, sube el pantallazo, y el cron
+   * le rechaza la compra y libera su numero mientras espera al administrador:
+   * dinero real perdido y un numero que se puede vender dos veces. Una compra
+   * con comprobante solo sale de PENDING cuando un humano decide.
+   */
   function expireReservations() {
     const now = Date.now();
     let freed = 0;
     for (const t of tickets.values()) {
       if (t.status === "RESERVED" && t.reservedUntil && t.reservedUntil < now) {
         const p = t.purchaseId && purchases.get(t.purchaseId);
+        if (p && p.receiptAt) continue; // esperando revision humana: se respeta
         if (p && p.status === "PENDING") p.status = "REJECTED", (p.note = "Reserva expirada");
         releaseTicket(t);
         freed++;
@@ -426,9 +517,9 @@ export function createStore({ reserveMinutes = 15 } = {}) {
   return {
     kind: "memory",
     createRaffle, getRaffle, updateRaffle, markPublished,
-    reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
+    reserve, getPurchase, attachReceipt, getReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
-    publicRaffle, publicNumbers, expireReservations, soldPurchases,
+    publicRaffle, paymentInfo, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,

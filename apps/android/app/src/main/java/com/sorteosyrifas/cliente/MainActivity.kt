@@ -60,7 +60,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.verticalScroll
 import coil.compose.AsyncImage
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -95,6 +106,21 @@ data class Raffle(
 
 /** Una cosa de las que componen el premio, con su valor. */
 data class PrizeItem(val name: String, val description: String, val valueCents: Long)
+
+/** Un medio de pago manual: "Nequi" -> "3200000000" ("A nombre de..."). */
+data class PaymentMethod(val label: String, val value: String, val hint: String)
+
+/**
+ * Como se le paga a esta rifa (GET /api/raffles/:slug/payment).
+ *
+ * NO sale de raffle.json: los datos de cuenta no se publican al repo publico
+ * (su historial es inmutable). Los sirve el backend a quien va a comprar.
+ */
+data class PaymentInfo(
+    val gatewayEnabled: Boolean,
+    val manualEnabled: Boolean,
+    val methods: List<PaymentMethod>,
+)
 
 data class Sold(val number: Int, val buyer: String)
 data class DrawWinner(val number: Int, val buyer: String)
@@ -322,6 +348,10 @@ private fun RaffleScreen(
     var checkout by remember { mutableStateOf<Checkout?>(null) }
     var busyMsg by remember { mutableStateOf<String?>(null) }
     var showMisNumeros by remember { mutableStateOf(false) }
+    // Pago manual en curso: numero + compra ya reservada, esperando comprobante.
+    var manual by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    var subiendo by remember { mutableStateOf(false) }
+    var pago by remember { mutableStateOf(PaymentInfo(true, true, emptyList())) }
 
     LaunchedEffect(reload, backendBase, slug) {
         loading = true
@@ -332,6 +362,10 @@ private fun RaffleScreen(
             raffle = parseRaffle(rJson)
             sold = parseSold(nJson)
             winner = parseWinner(rJson) ?: tryDrawJson(base)
+            // Los medios de pago no estan en raffle.json (no se publican al repo):
+            // se piden aparte. Si falla, se deja el valor por defecto y la compra
+            // sigue: no vale la pena tumbar la pantalla entera por esto.
+            pago = runCatching { fetchPaymentInfo(backendBase, slug) }.getOrDefault(pago)
             error = null
         } catch (e: Exception) {
             error = e.message ?: "No se pudo cargar el sorteo."
@@ -368,22 +402,58 @@ private fun RaffleScreen(
         buyNumber?.let { n ->
             PurchaseDialog(
                 etiqueta = padNum(n, raffle!!.max), priceCents = raffle!!.priceCents,
+                pago = pago,
                 onDismiss = { buyNumber = null },
-                onConfirm = { first, last, phone ->
+                onConfirm = { first, last, phone, metodo ->
                     buyNumber = null
                     busyMsg = "Reservando número ${padNum(n, raffle!!.max)}…"
                     scope.launch {
                         try {
-                            val c = reserve(backendBase, slug, n, first, last, phone)
+                            val c = reserve(backendBase, slug, n, first, last, phone, metodo)
                             // Se guarda ANTES de pagar: si el pago queda pendiente,
                             // el comprador igual puede seguirlo en "Mis números".
                             guardarMiCompra(prefs, MiCompra(c.purchaseId, slug, n))
                             busyMsg = null
-                            if (c.publicKey.isBlank()) {
+                            if (metodo == "MANUAL") {
+                                manual = n to c.purchaseId
+                            } else if (c.publicKey.isBlank()) {
                                 busyMsg = "El sorteo no tiene pagos configurados todavía."
                             } else checkout = c
                         } catch (e: Exception) {
                             busyMsg = "No se pudo reservar: ${e.message}"
+                        }
+                    }
+                },
+            )
+        }
+
+        manual?.let { (n, purchaseId) ->
+            val ctx = LocalContext.current
+            ManualPaymentDialog(
+                etiqueta = padNum(n, raffle!!.max),
+                priceCents = raffle!!.priceCents,
+                metodos = pago.methods,
+                subiendo = subiendo,
+                onDismiss = {
+                    manual = null
+                    // No se pierde: el numero sigue reservado y la compra quedo en
+                    // "Mis números", asi que puede volver y subirlo mas tarde.
+                    busyMsg = "Tu número ${padNum(n, raffle!!.max)} sigue apartado. " +
+                        "Puedes subir el comprobante desde \"Mis números\"."
+                },
+                onSubirComprobante = { uri ->
+                    subiendo = true
+                    scope.launch {
+                        try {
+                            val bytes = withContext(Dispatchers.IO) { comprimirComprobante(ctx, uri) }
+                            val msg = uploadReceipt(backendBase, purchaseId, bytes)
+                            manual = null
+                            busyMsg = msg
+                            reload++
+                        } catch (e: Exception) {
+                            busyMsg = "No se pudo enviar el comprobante: ${e.message}"
+                        } finally {
+                            subiendo = false
                         }
                     }
                 },
@@ -678,16 +748,24 @@ private fun NumberCell(etiqueta: String, sold: Sold?, isWinner: Boolean, onClick
 @Composable
 private fun PurchaseDialog(
     etiqueta: String, priceCents: Long,
-    onDismiss: () -> Unit, onConfirm: (String, String, String) -> Unit,
+    pago: PaymentInfo,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, String, String) -> Unit,
 ) {
     var first by remember { mutableStateOf("") }
     var last by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
+    // Si la rifa solo acepta uno, no se pregunta: se usa ese.
+    var metodo by remember {
+        mutableStateOf(if (pago.gatewayEnabled) "WOMPI" else "MANUAL")
+    }
+    val puedeElegir = pago.gatewayEnabled && pago.manualEnabled
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Comprar número $etiqueta") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("Precio: ${formatCop(priceCents)}", fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -700,15 +778,143 @@ private fun PurchaseDialog(
                 OutlinedTextField(last, { last = it }, label = { Text("Apellido") }, singleLine = true)
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(phone, { phone = it }, label = { Text("Teléfono") }, singleLine = true)
+
+                if (puedeElegir) {
+                    Spacer(Modifier.height(14.dp))
+                    Text("¿Cómo quieres pagar?", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    Row(
+                        Modifier.selectableGroup().padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        MetodoChip("Tarjeta / PSE", metodo == "WOMPI") { metodo = "WOMPI" }
+                        Spacer(Modifier.width(8.dp))
+                        MetodoChip("Transferencia", metodo == "MANUAL") { metodo = "MANUAL" }
+                    }
+                    if (metodo == "MANUAL") {
+                        Text(
+                            "Pagas por Nequi o transferencia y subes el comprobante. " +
+                                "Un administrador lo verifica.",
+                            fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(
                 enabled = first.isNotBlank() && last.isNotBlank(),
-                onClick = { onConfirm(first.trim(), last.trim(), phone.trim()) },
-            ) { Text("Ir a pagar") }
+                onClick = { onConfirm(first.trim(), last.trim(), phone.trim(), metodo) },
+            ) { Text(if (metodo == "MANUAL") "Ver datos de pago" else "Ir a pagar") }
         },
         dismissButton = { TextButton(onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
+private fun MetodoChip(texto: String, activo: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .selectable(selected = activo, onClick = onClick, role = Role.RadioButton)
+            .background(
+                if (activo) BrandViolet else FreeGray,
+                RoundedCornerShape(20.dp),
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Text(
+            texto,
+            color = if (activo) Color.White else Color.Gray,
+            fontSize = 12.sp,
+            fontWeight = if (activo) FontWeight.Bold else FontWeight.Normal,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pago manual
+// ---------------------------------------------------------------------------
+
+/**
+ * Paga tu mismo y manda el pantallazo.
+ *
+ * El numero ya esta reservado a nombre de esta compra. En cuanto sube el
+ * comprobante deja de expirar: queda retenido hasta que un administrador lo
+ * verifique. Por eso se le dice explicitamente, o creeria que puede perderlo.
+ */
+@Composable
+private fun ManualPaymentDialog(
+    etiqueta: String,
+    priceCents: Long,
+    metodos: List<PaymentMethod>,
+    onSubirComprobante: (android.net.Uri) -> Unit,
+    onDismiss: () -> Unit,
+    subiendo: Boolean,
+) {
+    val portapapeles = LocalClipboardManager.current
+    var copiado by remember { mutableStateOf<String?>(null) }
+
+    // Selector de fotos del sistema: NO pide permiso de almacenamiento (el
+    // usuario elige la foto y solo esa se comparte con la app).
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) onSubirComprobante(uri) }
+
+    AlertDialog(
+        onDismissRequest = { if (!subiendo) onDismiss() },
+        title = { Text("Paga el número $etiqueta") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Transfiere ${formatCop(priceCents)} a cualquiera de estas cuentas:",
+                    fontSize = 14.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                metodos.forEach { m ->
+                    Card(
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        colors = CardDefaults.cardColors(containerColor = FreeGray),
+                    ) {
+                        Row(
+                            Modifier.padding(12.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(m.label, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(m.value, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                                if (m.hint.isNotBlank()) {
+                                    Text(m.hint, fontSize = 11.sp, color = Color.Gray)
+                                }
+                            }
+                            TextButton(onClick = {
+                                // Copiar SOLO el dato, sin la etiqueta: se pega
+                                // directo en Nequi sin tener que limpiarlo.
+                                portapapeles.setText(AnnotatedString(m.value))
+                                copiado = m.label
+                            }) { Text(if (copiado == m.label) "✓ Copiado" else "Copiar") }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Tu número ${etiqueta} ya está apartado. Sube el comprobante y " +
+                        "queda reservado hasta que lo verifiquemos.",
+                    fontSize = 12.sp, color = Color.Gray,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !subiendo,
+                onClick = {
+                    picker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+            ) { Text(if (subiendo) "Enviando…" else "Subir comprobante") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !subiendo) { Text("Después") } },
     )
 }
 
@@ -794,6 +1000,62 @@ private suspend fun fetchRaffles(backendBase: String): List<RaffleSummary> {
     }
 }
 
+private suspend fun fetchPaymentInfo(backendBase: String, slug: String): PaymentInfo {
+    val o = JSONObject(httpGet("$backendBase/api/raffles/$slug/payment"))
+    val arr = o.optJSONArray("paymentMethods")
+    return PaymentInfo(
+        // Por defecto TRUE: una rifa creada antes de la v1.7.0 no trae los campos
+        // y debe seguir comportandose como siempre (pasarela disponible).
+        gatewayEnabled = o.optBoolean("gatewayEnabled", true),
+        manualEnabled = o.optBoolean("manualEnabled", true),
+        methods = buildList {
+            for (i in 0 until (arr?.length() ?: 0)) {
+                val m = arr!!.getJSONObject(i)
+                add(
+                    PaymentMethod(
+                        label = m.optString("label", ""),
+                        value = m.optString("value", ""),
+                        hint = m.optString("hint", ""),
+                    )
+                )
+            }
+        },
+    )
+}
+
+/**
+ * Reduce el pantallazo antes de subirlo.
+ *
+ * Un screenshot de un movil moderno son 2-4 MB. El backend corta en 1,2 MB y
+ * Vercel el cuerpo entero en ~4,5 MB (y base64 infla un 33%). 1280 px de ancho
+ * basta de sobra para leer un comprobante de Nequi y deja el archivo en ~150 KB.
+ */
+private fun comprimirComprobante(ctx: android.content.Context, uri: android.net.Uri): ByteArray {
+    val bitmap = ctx.contentResolver.openInputStream(uri).use { input ->
+        android.graphics.BitmapFactory.decodeStream(input)
+    } ?: throw Exception("No se pudo leer la imagen")
+
+    val maxLado = 1280
+    val escala = minOf(1f, maxLado.toFloat() / maxOf(bitmap.width, bitmap.height))
+    val escalado = if (escala < 1f) {
+        android.graphics.Bitmap.createScaledBitmap(
+            bitmap, (bitmap.width * escala).toInt(), (bitmap.height * escala).toInt(), true,
+        )
+    } else bitmap
+
+    val out = java.io.ByteArrayOutputStream()
+    escalado.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out)
+    return out.toByteArray()
+}
+
+/** Sube el comprobante. A partir de aqui el numero queda retenido para el admin. */
+private suspend fun uploadReceipt(backendBase: String, purchaseId: String, bytes: ByteArray): String {
+    val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+    val body = JSONObject().apply { put("base64", b64); put("mime", "image/jpeg") }
+    val r = JSONObject(httpPost("$backendBase/api/purchases/$purchaseId/receipt", body.toString(), 30_000))
+    return r.optString("mensaje", "Comprobante enviado")
+}
+
 private fun wompiCheckoutUrl(c: Checkout): String {
     fun e(s: String) = URLEncoder.encode(s, "UTF-8")
     return "https://checkout.wompi.co/p/" +
@@ -805,10 +1067,14 @@ private fun wompiCheckoutUrl(c: Checkout): String {
         "&redirect-url=${e(REDIRECT_URL)}"
 }
 
-private suspend fun reserve(backendBase: String, slug: String, number: Int, first: String, last: String, phone: String): Checkout {
+private suspend fun reserve(
+    backendBase: String, slug: String, number: Int,
+    first: String, last: String, phone: String,
+    method: String = "WOMPI",
+): Checkout {
     val body = JSONObject().apply {
         put("number", number)
-        put("method", "WOMPI")
+        put("method", method)
         put("buyer", JSONObject().apply {
             put("firstName", first); put("lastName", last); put("phone", phone)
         })
@@ -845,9 +1111,14 @@ private suspend fun httpGet(urlStr: String): String = withContext(Dispatchers.IO
     } finally { conn.disconnect() }
 }
 
-private suspend fun httpPost(urlStr: String, body: String): String = withContext(Dispatchers.IO) {
+/**
+ * @param timeoutMs por defecto 10 s. Subir el comprobante manda ~200 KB: por
+ * datos moviles flojos eso pasa de 10 s facil, y el comprador veria un error
+ * cuando en realidad solo iba lento.
+ */
+private suspend fun httpPost(urlStr: String, body: String, timeoutMs: Int = 10_000): String = withContext(Dispatchers.IO) {
     val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 10_000; readTimeout = 10_000; requestMethod = "POST"
+        connectTimeout = timeoutMs; readTimeout = timeoutMs; requestMethod = "POST"
         doOutput = true
         setRequestProperty("Content-Type", "application/json")
         setRequestProperty("Accept", "application/json")

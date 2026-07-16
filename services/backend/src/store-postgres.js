@@ -11,11 +11,25 @@ import { httpError, pseudonym } from "./store.js";
 import {
   normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
 } from "./raffle-media.js";
+import {
+  normalizePaymentMethods, validarComprobante, assertMetodoPermitido, assertFechas,
+} from "./payments.js";
 
 // Las migraciones viven junto al servicio para que viajen con el despliegue.
 const MIGRATIONS_DIR = new URL("../migrations/", import.meta.url);
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
+
+/**
+ * Columnas de `purchases` SIN la imagen del comprobante.
+ *
+ * `SELECT *` traeria receipt_image (un BYTEA de cientos de KB) en cada consulta.
+ * soldPurchases puede devolver 1000 filas: serian cientos de megas cruzando la
+ * red para acabar descartados. La imagen se pide explicitamente con getReceipt.
+ */
+const COLS_PURCHASE = `id, slug, number, method, status, reference, amount_cents,
+  buyer_public, private, wompi_transaction_id, purchased_at, verified_at,
+  approved_by, note, receipt_at`;
 
 // Lista blanca explicita: esta forma ES la que se publica a GitHub. Un `SELECT *`
 // mapeado a ciegas convertiria cualquier columna futura en dato publico.
@@ -31,6 +45,8 @@ function mapRaffle(r) {
     numberRange: { min: r.number_min, max: r.number_max },
     startsAt: iso(r.starts_at),
     endsAt: iso(r.ends_at),
+    // Fecha del SORTEO: distinta del cierre de ventas.
+    drawAt: iso(r.draw_at),
     minSoldToDraw: r.min_sold_to_draw,
     status: r.status,
     winner: r.winner || null,
@@ -39,6 +55,8 @@ function mapRaffle(r) {
     // Calculado al leer, nunca almacenado: no puede contradecir al desglose.
     prizeTotalCents: prizeTotalCents(prizeItems),
     theme: r.theme || {},
+    // OJO: payment_methods NO va aqui. Esta forma se commitea a un repo publico e
+    // inmutable; un numero de cuenta ahi queda para siempre. Los sirve paymentInfo.
   };
 }
 
@@ -53,7 +71,10 @@ function mapPurchase(p) {
     amountCents: Number(p.amount_cents),
     buyerPublic: p.buyer_public,
     private: p.private || {},
-    receiptUrl: p.receipt_url,
+    // Solo SI hay comprobante y cuando llego. Los BYTES nunca entran en esta
+    // forma: se piden aparte (getReceipt) y solo con rol autorizado.
+    hasReceipt: Boolean(p.receipt_at),
+    receiptAt: iso(p.receipt_at),
     wompiTransactionId: p.wompi_transaction_id,
     purchasedAt: iso(p.purchased_at),
     verifiedAt: iso(p.verified_at),
@@ -62,7 +83,10 @@ function mapPurchase(p) {
   };
 }
 
-export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } = {}) {
+export async function createPostgresStore(
+  databaseUrl,
+  { reserveMinutes = 15, manualReserveMinutes = reserveMinutes * 4 } = {},
+) {
   const { default: pg } = await import("pg");
 
   // Proveedores gestionados (Neon, Vercel Postgres) exigen TLS; en local no.
@@ -110,16 +134,20 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
   async function createRaffle(cfg) {
     // Se valida ANTES de abrir la transaccion: si el premio viene mal, no tiene
     // sentido haber creado 1000 tickets para luego revertirlos.
+    assertFechas(cfg.endsAt, cfg.drawAt);
     const media = normalizeMedia(cfg.media);
     const prizeItems = normalizePrizeItems(cfg.prizeItems);
     const theme = normalizeTheme(cfg.theme);
+    const pagos = normalizePaymentMethods(cfg.paymentMethods);
     await tx(async (c) => {
       await c.query(
-        `INSERT INTO raffles (slug,title,description,prize,price_cents,currency,number_min,number_max,starts_at,ends_at,min_sold_to_draw,status,media,prize_items,theme)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (slug) DO NOTHING`,
+        `INSERT INTO raffles (slug,title,description,prize,price_cents,currency,number_min,number_max,starts_at,ends_at,draw_at,min_sold_to_draw,status,media,prize_items,theme,payment_methods,gateway_enabled,manual_enabled)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (slug) DO NOTHING`,
         [cfg.slug, cfg.title, cfg.description || "", cfg.prize, cfg.priceCents, cfg.currency || "COP",
-         cfg.numberRange.min, cfg.numberRange.max, cfg.startsAt, cfg.endsAt, cfg.minSoldToDraw ?? 0, cfg.status || "ACTIVE",
-         JSON.stringify(media), JSON.stringify(prizeItems), JSON.stringify(theme)]
+         cfg.numberRange.min, cfg.numberRange.max, cfg.startsAt, cfg.endsAt, cfg.drawAt || null,
+         cfg.minSoldToDraw ?? 0, cfg.status || "ACTIVE",
+         JSON.stringify(media), JSON.stringify(prizeItems), JSON.stringify(theme),
+         JSON.stringify(pagos), cfg.gatewayEnabled !== false, cfg.manualEnabled !== false]
       );
       await c.query(
         `INSERT INTO tickets (slug, number) SELECT $1, g FROM generate_series($2::int, $3::int) g
@@ -145,18 +173,31 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
    * puede mandar solo `prizeItems` sin borrar el resto sin querer.
    */
   async function updateRaffle(slug, patch) {
-    await getRaffle(slug); // 404 si no existe
+    const actual = await getRaffle(slug); // 404 si no existe
+    // Las fechas se validan como PAR contra lo ya guardado: mandar solo una no
+    // puede dejar el sorteo antes del cierre.
+    assertFechas(
+      patch.endsAt !== undefined ? patch.endsAt : actual.endsAt,
+      patch.drawAt !== undefined ? patch.drawAt : actual.drawAt,
+    );
     const media = patch.media === undefined ? null : JSON.stringify(normalizeMedia(patch.media));
     const items = patch.prizeItems === undefined ? null : JSON.stringify(normalizePrizeItems(patch.prizeItems));
     const theme = patch.theme === undefined ? null : JSON.stringify(normalizeTheme(patch.theme));
+    const pagos = patch.paymentMethods === undefined ? null : JSON.stringify(normalizePaymentMethods(patch.paymentMethods));
     await q(
       `UPDATE raffles SET
-         title       = COALESCE($2, title),
-         description = COALESCE($3, description),
-         prize       = COALESCE($4, prize),
-         media       = COALESCE($5::jsonb, media),
-         prize_items = COALESCE($6::jsonb, prize_items),
-         theme       = COALESCE($7::jsonb, theme)
+         title           = COALESCE($2, title),
+         description     = COALESCE($3, description),
+         prize           = COALESCE($4, prize),
+         media           = COALESCE($5::jsonb, media),
+         prize_items     = COALESCE($6::jsonb, prize_items),
+         theme           = COALESCE($7::jsonb, theme),
+         ends_at         = COALESCE($8::timestamptz, ends_at),
+         draw_at         = CASE WHEN $9::boolean THEN $10::timestamptz ELSE draw_at END,
+         min_sold_to_draw= COALESCE($11::int, min_sold_to_draw),
+         payment_methods = COALESCE($12::jsonb, payment_methods),
+         gateway_enabled = COALESCE($13::boolean, gateway_enabled),
+         manual_enabled  = COALESCE($14::boolean, manual_enabled)
        WHERE slug=$1`,
       [
         slug,
@@ -164,9 +205,37 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
         patch.description === undefined ? null : String(patch.description).trim(),
         patch.prize === undefined ? null : String(patch.prize).trim() || null,
         media, items, theme,
+        patch.endsAt === undefined ? null : patch.endsAt,
+        // draw_at necesita CASE y no COALESCE: null es un valor legitimo (quitar
+        // la fecha), y COALESCE no distingue "mandaste null" de "no lo mandaste".
+        patch.drawAt !== undefined,
+        patch.drawAt || null,
+        patch.minSoldToDraw === undefined ? null : Number(patch.minSoldToDraw) || 0,
+        pagos,
+        patch.gatewayEnabled === undefined ? null : Boolean(patch.gatewayEnabled),
+        patch.manualEnabled === undefined ? null : Boolean(patch.manualEnabled),
       ]
     );
     return getRaffle(slug);
+  }
+
+  /**
+   * Datos para pagar. Publico (quien compra los necesita) pero servido por la
+   * API y NO publicado al repo: el historial de git es inmutable.
+   */
+  async function paymentInfo(slug) {
+    const { rows } = await q(
+      `SELECT slug, payment_methods, gateway_enabled, manual_enabled FROM raffles WHERE slug=$1`,
+      [slug]
+    );
+    if (!rows.length) throw httpError(404, "Rifa no encontrada");
+    const r = rows[0];
+    return {
+      slug: r.slug,
+      gatewayEnabled: r.gateway_enabled,
+      manualEnabled: r.manual_enabled,
+      paymentMethods: r.payment_methods || [],
+    };
   }
 
   // La escribe el publicador tras un push exitoso: es lo unico que permite al
@@ -181,19 +250,34 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
 
   async function reserve(slug, number, buyer, method = "MANUAL") {
     const raffle = await getRaffle(slug);
+    // Se valida en el servidor, no solo escondiendo el boton en la app: apagar
+    // la pasarela debe cerrarla de verdad, aunque llamen a la API a mano.
+    const info = await paymentInfo(slug);
+    assertMetodoPermitido(info, method);
     if (number < raffle.numberRange.min || number > raffle.numberRange.max) {
       throw httpError(404, "Numero fuera de rango");
     }
     const id = crypto.randomUUID();
     const reference = `RAFFLE-${slug}-NUM-${number}-${id}`;
-    const until = new Date(Date.now() + reserveMinutes * 60_000);
+    // El pago manual necesita mas tiempo: abrir Nequi, pagar, capturar y volver.
+    const minutos = method === "MANUAL" ? manualReserveMinutes : reserveMinutes;
+    const until = new Date(Date.now() + minutos * 60_000);
 
     return tx(async (c) => {
       // 1) Reclamo atomico del numero (libre o con reserva vencida).
+      //
+      // La reserva vencida NO se reclama si la compra anterior ya mando su
+      // comprobante: ese numero esta pagado y esperando a un humano, y darselo
+      // al siguiente que lo pida le robaria la compra a quien ya puso la plata.
+      // Es la misma regla que en expireReservations; este es el otro camino por
+      // el que un ticket cambia de manos.
       const claim = await c.query(
         `UPDATE tickets SET status='RESERVED', reserved_until=$3
            WHERE slug=$1 AND number=$2
-             AND (status='FREE' OR (status='RESERVED' AND reserved_until < now()))
+             AND (status='FREE' OR (
+                   status='RESERVED' AND reserved_until < now()
+                   AND (purchase_id IS NULL OR purchase_id IN (
+                     SELECT id FROM purchases WHERE receipt_at IS NULL))))
          RETURNING number`,
         [slug, number, until]
       );
@@ -215,15 +299,45 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
   }
 
   async function getPurchase(id) {
-    const { rows } = await q(`SELECT * FROM purchases WHERE id=$1`, [id]);
+    const { rows } = await q(`SELECT ${COLS_PURCHASE} FROM purchases WHERE id=$1`, [id]);
     if (!rows.length) throw httpError(404, "Compra no encontrada");
     return mapPurchase(rows[0]);
   }
 
-  async function attachReceipt(purchaseId, receiptUrl) {
-    const { rows } = await q(`UPDATE purchases SET receipt_url=$2 WHERE id=$1 RETURNING *`, [purchaseId, receiptUrl]);
-    if (!rows.length) throw httpError(404, "Compra no encontrada");
+  /**
+   * Adjunta el comprobante del pago manual (bytes PRIVADOS, en la base).
+   *
+   * No va al repo de la rifa como las fotos del premio: un pantallazo de Nequi
+   * lleva nombre completo, banco y a veces el saldo. Es privado por naturaleza.
+   *
+   * A partir de aqui el numero queda retenido hasta que un humano decida:
+   * expireReservations y reserve respetan toda compra con `receipt_at`.
+   */
+  async function attachReceipt(purchaseId, { bytes, mime } = {}) {
+    const mimeReal = validarComprobante(bytes);
+    const { rows } = await q(
+      `UPDATE purchases SET receipt_image=$2, receipt_mime=$3, receipt_at=now()
+         WHERE id=$1 AND status='PENDING' RETURNING *`,
+      [purchaseId, bytes, mimeReal || mime]
+    );
+    if (!rows.length) {
+      // Distinguir "no existe" de "ya no admite comprobante": el comprador
+      // merece saber si llego tarde porque ya se la aprobaron o rechazaron.
+      const { rows: existe } = await q(`SELECT status FROM purchases WHERE id=$1`, [purchaseId]);
+      if (!existe.length) throw httpError(404, "Compra no encontrada");
+      throw httpError(409, `La compra ya esta ${existe[0].status}: no admite comprobante`);
+    }
     return mapPurchase(rows[0]);
+  }
+
+  /** Bytes del comprobante. Solo para roles autorizados: es dato privado. */
+  async function getReceipt(purchaseId) {
+    const { rows } = await q(
+      `SELECT receipt_image, receipt_mime FROM purchases WHERE id=$1`, [purchaseId]
+    );
+    if (!rows.length) throw httpError(404, "Compra no encontrada");
+    if (!rows[0].receipt_image) throw httpError(404, "Esta compra no tiene comprobante");
+    return { bytes: rows[0].receipt_image, mime: rows[0].receipt_mime || "image/jpeg" };
   }
 
   async function markSold(purchase, { approvedBy = "wompi", wompiTransactionId = null } = {}) {
@@ -235,7 +349,7 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
         [purchase.id, approvedBy, wompiTransactionId]
       );
       if (upd.rowCount === 0) {
-        const cur = await c.query(`SELECT * FROM purchases WHERE id=$1`, [purchase.id]);
+        const cur = await c.query(`SELECT ${COLS_PURCHASE} FROM purchases WHERE id=$1`, [purchase.id]);
         if (!cur.rows.length) throw httpError(404, "Compra no encontrada");
         return mapPurchase(cur.rows[0]); // ya estaba aprobada -> idempotente
       }
@@ -301,7 +415,7 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
   }
 
   async function findByReference(reference) {
-    const { rows } = await q(`SELECT * FROM purchases WHERE reference=$1`, [reference]);
+    const { rows } = await q(`SELECT ${COLS_PURCHASE} FROM purchases WHERE reference=$1`, [reference]);
     return rows.length ? mapPurchase(rows[0]) : null;
   }
 
@@ -318,7 +432,7 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
 
   async function soldPurchases(slug) {
     const { rows } = await q(
-      `SELECT * FROM purchases WHERE slug=$1 AND status='APPROVED' ORDER BY number`, [slug]
+      `SELECT ${COLS_PURCHASE} FROM purchases WHERE slug=$1 AND status='APPROVED' ORDER BY number`, [slug]
     );
     return rows.map(mapPurchase);
   }
@@ -337,7 +451,7 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
       throw httpError(422, "El numero declarado no esta vendido (SOLD)");
     }
     const pr = await q(
-      `SELECT * FROM purchases WHERE slug=$1 AND number=$2 AND status='APPROVED' LIMIT 1`, [slug, number]
+      `SELECT ${COLS_PURCHASE} FROM purchases WHERE slug=$1 AND number=$2 AND status='APPROVED' LIMIT 1`, [slug, number]
     );
     const p = mapPurchase(pr.rows[0]);
     const winner = { number, buyer: p.buyerPublic, purchasedAt: p.purchasedAt, verifiedAt: p.verifiedAt };
@@ -406,9 +520,15 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
   }
 
   async function adminPurchases(slug, statusFilter) {
+    // Columnas explicitas y NO `SELECT *`: receipt_image es un BYTEA de cientos
+    // de KB. Con `*`, listar 100 compras traeria decenas de megas de imagenes
+    // desde la base solo para descartarlas aqui. El comprobante se pide aparte.
     const { rows } = await q(
-      `SELECT * FROM purchases WHERE slug=$1 AND ($2::text IS NULL OR status=$2)
-       ORDER BY purchased_at`,
+      `SELECT id, slug, number, method, status, reference, amount_cents, buyer_public,
+              private, wompi_transaction_id, purchased_at, verified_at, approved_by,
+              note, receipt_at
+         FROM purchases WHERE slug=$1 AND ($2::text IS NULL OR status=$2)
+        ORDER BY purchased_at`,
       [slug, statusFilter || null]
     );
     return rows.map((r) => {
@@ -416,22 +536,33 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
       return {
         id: p.id, number: p.number, buyer: p.buyerPublic, method: p.method,
         status: p.status, purchasedAt: p.purchasedAt, verifiedAt: p.verifiedAt,
-        receiptUrl: p.receiptUrl, contact: p.private,
+        hasReceipt: p.hasReceipt, receiptAt: p.receiptAt, contact: p.private,
       };
     });
   }
 
+  /**
+   * Libera las reservas vencidas.
+   *
+   * NUNCA toca una compra con comprobante adjunto, por vencida que este.
+   * Sin esa guarda, el comprador paga por Nequi, sube el pantallazo, y el cron
+   * le rechaza la compra y libera su numero mientras espera al administrador:
+   * dinero real perdido y un numero vendido dos veces. Una compra con
+   * comprobante solo sale de PENDING cuando un humano la aprueba o la rechaza.
+   */
   async function expireReservations() {
     return tx(async (c) => {
       await c.query(
         `UPDATE purchases SET status='REJECTED', note='Reserva expirada'
-           WHERE status='PENDING' AND id IN (
+           WHERE status='PENDING' AND receipt_at IS NULL AND id IN (
              SELECT purchase_id FROM tickets
               WHERE status='RESERVED' AND reserved_until < now() AND purchase_id IS NOT NULL)`
       );
       const r = await c.query(
         `UPDATE tickets SET status='FREE', reserved_until=NULL, purchase_id=NULL
-           WHERE status='RESERVED' AND reserved_until < now()`
+           WHERE status='RESERVED' AND reserved_until < now()
+             AND (purchase_id IS NULL OR purchase_id IN (
+               SELECT id FROM purchases WHERE receipt_at IS NULL))`
       );
       return r.rowCount;
     });
@@ -539,9 +670,9 @@ export async function createPostgresStore(databaseUrl, { reserveMinutes = 15 } =
   return {
     kind: "postgres",
     createRaffle, getRaffle, updateRaffle, markPublished,
-    reserve, getPurchase, attachReceipt, approve, reject, voidPurchase, markSold,
+    reserve, getPurchase, attachReceipt, getReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
-    publicRaffle, publicNumbers, expireReservations, soldPurchases,
+    publicRaffle, paymentInfo, publicNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,

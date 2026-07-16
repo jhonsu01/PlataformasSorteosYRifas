@@ -19,6 +19,12 @@ export const config = {
   // Minutos que un numero queda RESERVED antes de liberarse si no hay pago.
   reserveMinutes: Number(process.env.RESERVE_MINUTES || 15),
 
+  // El pago manual es un tramite humano: abrir Nequi, pagar, tomar el pantallazo
+  // y volver a la app. Con los 15 minutos de la pasarela (que cobra al instante)
+  // se le caeria el numero a medio pagar. Una vez sube el comprobante ya no
+  // expira nunca: queda retenido hasta que un administrador decida.
+  manualReserveMinutes: Number(process.env.MANUAL_RESERVE_MINUTES || 60),
+
   // Siembra la rifa demo. Por defecto SOLO en modo memoria: con una base real
   // (produccion) no se inyectan datos de ejemplo salvo que se pida explicitamente.
   seedDemo: process.env.SEED_DEMO
@@ -33,6 +39,7 @@ export const config = {
     reserve: Number(process.env.RATE_LIMIT_RESERVE ?? 15),  // por IP / 10 min
     login: Number(process.env.RATE_LIMIT_LOGIN ?? 10),      // por IP / 10 min
     webhook: Number(process.env.RATE_LIMIT_WEBHOOK ?? 120), // por IP / 1 min
+    receipt: Number(process.env.RATE_LIMIT_RECEIPT ?? 20),  // por IP / 10 min
   },
 
   jwt: {
