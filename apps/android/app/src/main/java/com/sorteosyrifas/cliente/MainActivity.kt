@@ -136,8 +136,24 @@ data class RaffleSummary(
 /** Compra propia guardada en el dispositivo (ver MisNumeros). */
 data class MiCompra(val purchaseId: String, val slug: String, val number: Int)
 
-/** Estado vivo de una compra propia (GET /api/purchases/:id). */
-data class EstadoCompra(val number: Int, val status: String)
+/**
+ * Estado vivo de una compra propia (GET /api/purchases/:id).
+ *
+ * `method` y `hasReceipt` son lo que permite ofrecerle subir el comprobante al
+ * que cerro el dialogo de pago y se fue a mirar otros numeros: sin ellos se
+ * quedaba sin forma de mandarlo y habia que rechazarle la compra.
+ */
+data class EstadoCompra(
+    val purchaseId: String,
+    val number: Int,
+    val status: String,
+    val method: String = "",
+    val hasReceipt: Boolean = false,
+) {
+    /** Le falta el comprobante y todavia esta a tiempo de mandarlo. */
+    val puedeSubirComprobante: Boolean
+        get() = status == "PENDING" && method == "MANUAL" && !hasReceipt
+}
 
 data class Checkout(
     val purchaseId: String, val reference: String, val amountInCents: Long,
@@ -148,6 +164,9 @@ private val BrandViolet = Color(0xFF7C3AED)
 private val BrandPink = Color(0xFFDB2777)
 private val Gold = Color(0xFFFBBF24)
 private val FreeGray = Color(0xFFEDEAF5)
+// Apartado por otro: ni libre ni vendido. Ambar apagado para que se distinga del
+// violeta de "vendido" sin gritar tanto como el oro del ganador.
+private val Apartado = Color(0xFFD9CBA8)
 
 private const val REDIRECT_URL = "https://sorteosyrifas.app/resultado"
 
@@ -352,6 +371,9 @@ private fun RaffleScreen(
     var manual by remember { mutableStateOf<Pair<Int, String>?>(null) }
     var subiendo by remember { mutableStateOf(false) }
     var pago by remember { mutableStateOf(PaymentInfo(true, true, emptyList())) }
+    // Numeros apartados por otros AHORA MISMO. No estan en numbers.json (eso es
+    // el estado publicado y una reserva dura minutos): se piden al backend.
+    var apartados by remember { mutableStateOf<Set<Int>>(emptySet()) }
 
     LaunchedEffect(reload, backendBase, slug) {
         loading = true
@@ -366,6 +388,9 @@ private fun RaffleScreen(
             // se piden aparte. Si falla, se deja el valor por defecto y la compra
             // sigue: no vale la pena tumbar la pantalla entera por esto.
             pago = runCatching { fetchPaymentInfo(backendBase, slug) }.getOrDefault(pago)
+            // Si falla, la rejilla los pinta libres y el 409 lo explica: no vale
+            // la pena tumbar la pantalla por un dato de conveniencia.
+            apartados = runCatching { fetchHeld(backendBase, slug) }.getOrDefault(emptySet())
             error = null
         } catch (e: Exception) {
             error = e.message ?: "No se pudo cargar el sorteo."
@@ -389,12 +414,21 @@ private fun RaffleScreen(
                 Button(onCambiarRifa) { Text("Ver otros sorteos") }
             }
             raffle != null -> Content(
-                raffle = raffle!!, sold = sold, winner = winner,
+                raffle = raffle!!, sold = sold, winner = winner, apartados = apartados,
                 onCambiarRifa = onCambiarRifa,
                 onMisNumeros = { showMisNumeros = true },
                 onPickNumber = { n ->
-                    if (raffle!!.status != "ACTIVE") busyMsg = "El sorteo no está activo."
-                    else buyNumber = n
+                    when {
+                        raffle!!.status != "ACTIVE" -> busyMsg = "El sorteo no está activo."
+                        // Se avisa ANTES de intentar reservar. El backend lo
+                        // rechazaria igual, pero el comprador merece saberlo sin
+                        // tener que llenar el formulario para nada.
+                        n in apartados -> busyMsg =
+                            "El número ${padNum(n, raffle!!.max)} está apartado por otra persona " +
+                                "o esperando que se verifique un pago. Si no se completa volverá " +
+                                "a quedar libre; mientras tanto, elige otro."
+                        else -> buyNumber = n
+                    }
                 },
             )
         }
@@ -483,6 +517,12 @@ private fun RaffleScreen(
         if (showMisNumeros) MisNumerosDialog(
             backendBase = backendBase, prefs = prefs, slug = slug,
             max = raffle?.max ?: 999,
+            onPagar = { n, purchaseId ->
+                // Reabre la pantalla de pago de una compra que YA existe: no se
+                // reserva de nuevo (el numero ya es suyo), solo se retoma.
+                showMisNumeros = false
+                manual = n to purchaseId
+            },
             onDismiss = { showMisNumeros = false },
         )
 
@@ -498,7 +538,7 @@ private fun RaffleScreen(
 
 @Composable
 private fun Content(
-    raffle: Raffle, sold: List<Sold>, winner: DrawWinner?,
+    raffle: Raffle, sold: List<Sold>, winner: DrawWinner?, apartados: Set<Int>,
     onCambiarRifa: () -> Unit, onMisNumeros: () -> Unit, onPickNumber: (Int) -> Unit,
 ) {
     val soldByNumber = remember(sold) { sold.associateBy { it.number } }
@@ -508,7 +548,7 @@ private fun Content(
     Column(Modifier.fillMaxSize()) {
         Header(raffle, sold.size, total, onCambiarRifa, onMisNumeros)
         if (winner != null) WinnerBanner(winner, raffle.max)
-        Legend()
+        Legend(hayApartados = apartados.isNotEmpty())
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 62.dp),
             contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 16.dp + navBottom),
@@ -518,7 +558,9 @@ private fun Content(
         ) {
             gridItems((raffle.min..raffle.max).toList()) { n ->
                 val s = soldByNumber[n]
-                NumberCell(padNum(n, raffle.max), s, winner?.number == n) { if (s == null) onPickNumber(n) }
+                NumberCell(padNum(n, raffle.max), s, winner?.number == n, n in apartados) {
+                    if (s == null) onPickNumber(n)
+                }
             }
         }
     }
@@ -605,23 +647,34 @@ private fun Header(
 // ---------------------------------------------------------------------------
 @Composable
 private fun MisNumerosDialog(
-    backendBase: String, prefs: SharedPreferences, slug: String, max: Int, onDismiss: () -> Unit,
+    backendBase: String, prefs: SharedPreferences, slug: String, max: Int,
+    onPagar: (Int, String) -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val mias = remember { leerMisCompras(prefs, slug) }
     var loading by remember { mutableStateOf(true) }
     var estados by remember { mutableStateOf<List<EstadoCompra>>(emptyList()) }
 
     LaunchedEffect(Unit) {
-        estados = mias.mapNotNull { c ->
+        estados = mias.map { c ->
             try {
                 val o = JSONObject(httpGet("$backendBase/api/purchases/${c.purchaseId}"))
-                EstadoCompra(o.getInt("number"), o.getString("status"))
+                EstadoCompra(
+                    purchaseId = c.purchaseId,
+                    number = o.getInt("number"),
+                    status = o.getString("status"),
+                    method = o.optString("method", ""),
+                    hasReceipt = o.optBoolean("hasReceipt", false),
+                )
             } catch (_: Exception) {
-                EstadoCompra(c.number, "DESCONOCIDO")
+                EstadoCompra(c.purchaseId, c.number, "DESCONOCIDO")
             }
         }
         loading = false
     }
+
+    // Los que esperan comprobante van ARRIBA: es lo unico aqui que pide accion.
+    val ordenados = estados.sortedByDescending { it.puedeSubirComprobante }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -637,24 +690,38 @@ private fun MisNumerosDialog(
                         "Toca un número libre para comprarlo.",
                     fontSize = 14.sp, color = Color.Gray,
                 )
-                else -> Column {
+                else -> Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
                         "Se guardan en este dispositivo. Si desinstalas la app o cambias de " +
                             "teléfono, esta lista se pierde (tu compra no).",
                         fontSize = 11.sp, color = Color.Gray,
                     )
                     Spacer(Modifier.height(12.dp))
-                    estados.forEach { e ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Box(
-                                Modifier.background(colorEstado(e.status), RoundedCornerShape(10.dp))
-                                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                            ) { Text(padNum(e.number, max), color = Color.White, fontWeight = FontWeight.Bold) }
-                            Spacer(Modifier.width(12.dp))
-                            Text(textoEstado(e.status), fontSize = 14.sp)
+                    ordenados.forEach { e ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier.background(colorEstado(e.status), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) { Text(padNum(e.number, max), color = Color.White, fontWeight = FontWeight.Bold) }
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    if (e.puedeSubirComprobante) "Falta tu comprobante" else textoEstado(e.status),
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            // El camino de vuelta: si cerro el dialogo de pago y se
+                            // fue a mirar otros numeros, aqui lo recupera. Sin esto
+                            // se quedaba sin forma de mandarlo y al administrador le
+                            // tocaba RECHAZARLE la compra para liberar el numero.
+                            if (e.puedeSubirComprobante) {
+                                Button(
+                                    onClick = { onPagar(e.number, e.purchaseId) },
+                                    modifier = Modifier.padding(start = 56.dp, top = 4.dp),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                                ) { Text("Ver datos de pago y subir", fontSize = 12.sp) }
+                            }
                         }
                     }
                 }
@@ -701,12 +768,16 @@ private fun WinnerBanner(winner: DrawWinner, max: Int) {
 }
 
 @Composable
-private fun Legend() {
+private fun Legend(hayApartados: Boolean) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        LegendItem(BrandViolet, "Vendido"); LegendItem(FreeGray, "Libre"); LegendItem(Gold, "Ganador")
+        LegendItem(BrandViolet, "Vendido")
+        LegendItem(FreeGray, "Libre")
+        // Solo si los hay: una leyenda con un color que no esta en pantalla confunde.
+        if (hayApartados) LegendItem(Apartado, "Apartado")
+        LegendItem(Gold, "Ganador")
     }
 }
 
@@ -720,10 +791,15 @@ private fun LegendItem(color: Color, label: String) {
 }
 
 @Composable
-private fun NumberCell(etiqueta: String, sold: Sold?, isWinner: Boolean, onClick: () -> Unit) {
+private fun NumberCell(
+    etiqueta: String, sold: Sold?, isWinner: Boolean, apartado: Boolean, onClick: () -> Unit,
+) {
     val bg = when {
         isWinner -> Gold
         sold != null -> BrandViolet
+        // Apartado: se ve tomado pero se deja tocar, para poder explicar por que
+        // no esta disponible. Un numero muerto que no responde no ensena nada.
+        apartado -> Apartado
         else -> FreeGray
     }
     val fg = if (sold != null || isWinner) Color.White else Color(0xFF6B7280)
@@ -738,8 +814,16 @@ private fun NumberCell(etiqueta: String, sold: Sold?, isWinner: Boolean, onClick
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(etiqueta, color = fg, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            if (sold != null) {
-                Text(sold.buyer, color = fg.copy(alpha = 0.9f), fontSize = 8.sp, maxLines = 1, textAlign = TextAlign.Center)
+            when {
+                sold != null -> Text(
+                    sold.buyer, color = fg.copy(alpha = 0.9f), fontSize = 8.sp,
+                    maxLines = 1, textAlign = TextAlign.Center,
+                )
+                // No se dice QUIEN lo aparto: el backend tampoco lo revela.
+                apartado -> Text(
+                    "apartado", color = fg.copy(alpha = 0.8f), fontSize = 7.sp,
+                    maxLines = 1, textAlign = TextAlign.Center,
+                )
             }
         }
     }
@@ -998,6 +1082,17 @@ private suspend fun fetchRaffles(backendBase: String): List<RaffleSummary> {
             )
         }
     }
+}
+
+/**
+ * Numeros apartados ahora mismo por otras personas.
+ *
+ * No salen de numbers.json (ese es el estado publicado y una reserva dura
+ * minutos): los sirve el backend. Solo numeros, sin identidad.
+ */
+private suspend fun fetchHeld(backendBase: String, slug: String): Set<Int> {
+    val arr = JSONObject(httpGet("$backendBase/api/raffles/$slug/held")).getJSONArray("held")
+    return buildSet { for (i in 0 until arr.length()) add(arr.getInt(i)) }
 }
 
 private suspend fun fetchPaymentInfo(backendBase: String, slug: String): PaymentInfo {

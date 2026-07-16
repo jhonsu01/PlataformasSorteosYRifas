@@ -548,7 +548,18 @@ async function abrirEditorPremio(slug) {
     ]);
     premioEstado = {
       slug,
-      media: { cover: raffle.media?.cover || "", gallery: raffle.media?.gallery || [], youtubeId: raffle.media?.youtubeId || "" },
+      media: {
+        cover: raffle.media?.cover || "",
+        gallery: raffle.media?.gallery || [],
+        // Se guarda el TEXTO del campo, no el id. El estado tenia el id y al
+        // repintar le anteponia "watch?v=", pero volcarCampos guardaba de vuelta
+        // la URL entera: cada repintado (elegir un color, añadir un item) la
+        // prefijaba otra vez y la URL se duplicaba. El campo de texto y el dato
+        // derivado no pueden vivir en la misma variable.
+        youtubeUrl: raffle.media?.youtubeId
+          ? `https://www.youtube.com/watch?v=${raffle.media.youtubeId}`
+          : "",
+      },
       prizeItems: (raffle.prizeItems || []).map((i) => ({ ...i })),
       theme: { accent: raffle.theme?.accent || "" },
       endsAt: raffle.endsAt || "",
@@ -660,7 +671,7 @@ function pintarEditorPremio() {
         <h3>Video de YouTube</h3>
         <p class="muted small">Pega la URL del video. Opcional.</p>
         <input class="inp" id="pm-yt" placeholder="https://www.youtube.com/watch?v=..."
-               value="${esc(s.media.youtubeId ? `https://www.youtube.com/watch?v=${s.media.youtubeId}` : "")}" />
+               value="${esc(s.media.youtubeUrl)}" />
 
         <h3>Color de la rifa</h3>
         <p class="muted small">El acento de su página. Cada rifa puede tener el suyo.</p>
@@ -815,8 +826,10 @@ function volcarCampos() {
   m.querySelectorAll("[data-plabel]").forEach((i) => { s.paymentMethods[Number(i.dataset.plabel)].label = i.value; });
   m.querySelectorAll("[data-pvalue]").forEach((i) => { s.paymentMethods[Number(i.dataset.pvalue)].value = i.value; });
   m.querySelectorAll("[data-phint]").forEach((i) => { s.paymentMethods[Number(i.dataset.phint)].hint = i.value; });
+  // Tal cual lo escribio el admin: NO se transforma aqui. Convertir al vuelco y
+  // volver a pintar sobre lo convertido es lo que duplicaba la URL.
   const yt = $("#pm-yt");
-  if (yt) s.media.youtubeId = yt.value.trim();
+  if (yt) s.media.youtubeUrl = yt.value.trim();
   const ends = $("#pm-ends"); if (ends) s.endsAt = localAIso(ends.value);
   const draw = $("#pm-draw"); if (draw) s.drawAt = localAIso(draw.value);
   const ms = $("#pm-minsold"); if (ms) s.minSoldToDraw = Number(ms.value || 0);
@@ -852,7 +865,8 @@ async function guardarPremio() {
           cover: s.media.cover || undefined,
           gallery: s.media.gallery,
           // Se manda la URL entera: el backend extrae el id de 11 caracteres.
-          youtubeId: s.media.youtubeId || undefined,
+          // El backend acepta la URL entera y extrae el id de 11 caracteres.
+          youtubeId: s.media.youtubeUrl || undefined,
         },
         prizeItems: items,
         theme: s.theme.accent ? { accent: s.theme.accent } : {},

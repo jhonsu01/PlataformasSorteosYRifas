@@ -26,7 +26,7 @@ test("reserva atomica: no se puede reservar dos veces el mismo numero", () => {
   const store = createStore();
   demoRaffle(store);
   store.reserve("t", 5, { firstName: "Juan", lastName: "Sanchez" });
-  assert.throws(() => store.reserve("t", 5, { firstName: "Otra", lastName: "Persona" }), /no disponible/);
+  assert.throws(() => store.reserve("t", 5, { firstName: "Otra", lastName: "Persona" }), /apartado por otra persona/);
 });
 
 test("flujo compra->aprobacion->publico: solo campos permitidos, sin datos privados", () => {

@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { httpError, pseudonym } from "./store.js";
+import { httpError, pseudonym, motivoNoDisponible } from "./store.js";
 import {
   normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
 } from "./raffle-media.js";
@@ -281,7 +281,18 @@ export async function createPostgresStore(
          RETURNING number`,
         [slug, number, until]
       );
-      if (claim.rowCount === 0) throw httpError(409, "Numero no disponible");
+      if (claim.rowCount === 0) {
+        // El UPDATE solo dice que no toco filas. Se consulta el ticket para
+        // decirle al comprador POR QUE: vendido, apartado o esperando que un
+        // admin verifique un pago son tres situaciones muy distintas para el.
+        const { rows } = await c.query(
+          `SELECT t.status, p.receipt_at
+             FROM tickets t LEFT JOIN purchases p ON p.id = t.purchase_id
+            WHERE t.slug=$1 AND t.number=$2`,
+          [slug, number]
+        );
+        throw httpError(409, motivoNoDisponible(rows[0] || { status: "RESERVED" }, rows[0]));
+      }
 
       // 2) Crear la compra.
       const { rows } = await c.query(
@@ -328,6 +339,30 @@ export async function createPostgresStore(
       throw httpError(409, `La compra ya esta ${existe[0].status}: no admite comprobante`);
     }
     return mapPurchase(rows[0]);
+  }
+
+  /**
+   * Numeros apartados ahora mismo (reserva viva o esperando verificacion).
+   *
+   * SOLO numeros: ni nombre, ni telefono, ni cuando. Que un numero este tomado
+   * es informacion que el comprador necesita; quien lo tomo, no.
+   *
+   * La reserva vencida SIN comprobante se omite: se va a caer en el proximo
+   * cron, asi que mostrarla como tomada espantaria a un comprador de un numero
+   * que en realidad ya puede pedir.
+   */
+  async function heldNumbers(slug) {
+    await getRaffle(slug);
+    const { rows } = await q(
+      `SELECT t.number
+         FROM tickets t
+         LEFT JOIN purchases p ON p.id = t.purchase_id
+        WHERE t.slug = $1 AND t.status = 'RESERVED'
+          AND (t.reserved_until IS NULL OR t.reserved_until >= now() OR p.receipt_at IS NOT NULL)
+        ORDER BY t.number`,
+      [slug]
+    );
+    return { held: rows.map((r) => r.number) };
   }
 
   /** Bytes del comprobante. Solo para roles autorizados: es dato privado. */
@@ -672,7 +707,7 @@ export async function createPostgresStore(
     createRaffle, getRaffle, updateRaffle, markPublished,
     reserve, getPurchase, attachReceipt, getReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
-    publicRaffle, paymentInfo, publicNumbers, expireReservations, soldPurchases,
+    publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,

@@ -26,6 +26,21 @@ export function pseudonym(firstName, lastName) {
   return l ? `${f} ${l[0].toUpperCase()}.` : f;
 }
 
+/**
+ * Por que un numero no esta disponible, en palabras del comprador.
+ *
+ * Los tres casos son muy distintos para quien esta comprando: uno es definitivo,
+ * otro se resuelve en minutos y otro depende de que un admin revise un pago. No
+ * revela QUIEN lo tiene: solo el estado del numero.
+ */
+export function motivoNoDisponible(ticket, ocupante) {
+  if (ticket.status === "SOLD") return "Ese número ya está vendido. Elige otro.";
+  if (ocupante?.receiptAt || ocupante?.receipt_at) {
+    return "Ese número está pendiente de confirmación: alguien ya envió el pago y un administrador lo está verificando. Elige otro.";
+  }
+  return "Ese número está apartado por otra persona ahora mismo. Si no completa el pago volverá a quedar libre; mientras tanto, elige otro.";
+}
+
 export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) {
   const reserveMs = reserveMinutes * 60 * 1000;
   // El pago manual es un tramite humano (abrir Nequi, pagar, capturar, subir):
@@ -100,7 +115,12 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       const previa = t.purchaseId && purchases.get(t.purchaseId);
       if (!previa?.receiptAt) releaseTicket(t);
     }
-    if (t.status !== "FREE") throw httpError(409, "Numero no disponible");
+    if (t.status !== "FREE") {
+      // El motivo, no solo el rechazo: "no disponible" a secas deja al comprador
+      // sin saber si esperar (una reserva se cae en minutos) o buscar otro.
+      const ocupante = t.purchaseId && purchases.get(t.purchaseId);
+      throw httpError(409, motivoNoDisponible(t, ocupante));
+    }
 
     const id = crypto.randomUUID();
     const reference = `RAFFLE-${slug}-NUM-${number}-${id}`;
@@ -343,6 +363,27 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
    * Datos para pagar. Publico (quien compra necesita verlos) pero servido por la
    * API y NO publicado al repo, a diferencia del resto del estado.
    */
+  /**
+   * Numeros apartados ahora mismo (reserva viva o esperando verificacion).
+   *
+   * SOLO numeros: ni nombre, ni telefono, ni cuando. Que un numero este tomado
+   * es informacion que el comprador necesita; quien lo tomo, no.
+   */
+  function heldNumbers(slug) {
+    getRaffle(slug);
+    const ahora = Date.now();
+    const held = [];
+    for (const t of tickets.values()) {
+      if (t.slug !== slug || t.status !== "RESERVED") continue;
+      const p = t.purchaseId && purchases.get(t.purchaseId);
+      // Vencida y sin comprobante = va a caerse en el proximo cron: se muestra
+      // libre para no espantar a un comprador por un numero que ya es suyo.
+      const viva = !t.reservedUntil || t.reservedUntil >= ahora;
+      if (viva || p?.receiptAt) held.push(t.number);
+    }
+    return { held: held.sort((a, b) => a - b) };
+  }
+
   /** Bytes del comprobante. Solo para roles autorizados: es dato privado. */
   function getReceipt(purchaseId) {
     const p = purchases.get(purchaseId);
@@ -519,7 +560,7 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
     createRaffle, getRaffle, updateRaffle, markPublished,
     reserve, getPurchase, attachReceipt, getReceipt, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
-    publicRaffle, paymentInfo, publicNumbers, expireReservations, soldPurchases,
+    publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,

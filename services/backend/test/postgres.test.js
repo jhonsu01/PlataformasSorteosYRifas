@@ -69,7 +69,7 @@ test("postgres: reserva atomica — el mismo numero no se vende dos veces", { sk
     await store.reserve("pg-test", 5, { firstName: "Juan", lastName: "Sanchez" });
     await assert.rejects(
       () => store.reserve("pg-test", 5, { firstName: "Otra", lastName: "Persona" }),
-      /no disponible/
+      /apartado por otra persona/
     );
   } finally { await store.close(); }
 });
@@ -362,7 +362,7 @@ test("postgres CRITICO: la compra con comprobante no expira ni la roba otro", { 
     // 2) Y otro comprador tampoco puede reclamarlo, aunque la reserva este vencida.
     await assert.rejects(
       () => store.reserve("pg-test", 7, { firstName: "Otro", lastName: "Vivo" }, "MANUAL"),
-      /no disponible/,
+      /pendiente de confirmación/,
       "otro comprador NO puede quedarse con un numero que ya se pago",
     );
   } finally { await store.close(); }

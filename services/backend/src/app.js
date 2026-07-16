@@ -293,12 +293,29 @@ export async function handler(req, res) {
       return json(res, 200, { purchases: await store.adminPurchases(slug, url.searchParams.get("status") || null) });
     }
 
+    // Estado de una compra. Abierto: quien la hizo tiene el id (un UUID) y no
+    // tiene cuenta. Lista blanca estricta: NUNCA telefono, correo ni documento,
+    // o bastaria adivinar un UUID para sacar datos de un tercero.
     if (M === "GET" && parts[0] === "api" && parts[1] === "purchases" && parts.length === 3) {
       const p = await store.getPurchase(parts[2]);
       return json(res, 200, {
         id: p.id, slug: p.slug, number: p.number,
         status: p.status, verifiedAt: p.verifiedAt, reference: p.reference,
+        // Sin esto, la app no puede saber a quien ofrecerle subir el comprobante:
+        // el comprador que cerro el dialogo se quedaba sin forma de mandarlo.
+        method: p.method,
+        hasReceipt: Boolean(p.receiptAt),
       });
+    }
+
+    // GET /api/raffles/:slug/held -> numeros apartados AHORA MISMO.
+    //
+    // Solo los numeros, sin identidad ni fechas. Va aparte de numbers.json a
+    // proposito: una reserva es estado efimero (dura minutos) y publicarla al
+    // repo llenaria el historial de commits de ruido que no verifica nada.
+    // Sirve para que el comprador vea que un numero esta tomado ANTES de tocarlo.
+    if (M === "GET" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "held") {
+      return json(res, 200, await store.heldNumbers(parts[2]));
     }
 
     if (M === "GET" && parts[0] === "api" && parts[1] === "checkout" && parts[2] === "signature") {
