@@ -28,6 +28,16 @@ export function pseudonym(firstName, lastName) {
 }
 
 /**
+ * Ciudad del comprador, publica. Solo el nombre de la ciudad: se recorta a 60
+ * caracteres para que nadie meta una direccion completa (que si seria privada)
+ * en un campo pensado para "Medellin".
+ */
+export function normalizeCity(city) {
+  const s = String(city || "").trim().replace(/\s+/g, " ");
+  return s ? s.slice(0, 60) : null;
+}
+
+/**
  * Por que un numero no esta disponible, en palabras del comprador.
  *
  * Los tres casos son muy distintos para quien esta comprando: uno es definitivo,
@@ -142,6 +152,8 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       reference,
       amountCents: raffle.priceCents,
       buyerPublic: pseudonym(buyer.firstName, buyer.lastName),
+      // Ciudad: PUBLICA (el usuario acepto que se muestre). Grueso, no direccion.
+      buyerCity: normalizeCity(buyer.city),
       // datos privados: jamas en la salida publica
       private: {
         phone: buyer.phone || null,
@@ -322,6 +334,7 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
         id: p.id,
         number: p.number,
         buyer: p.buyerPublic,
+        city: p.buyerCity || null,
         method: p.method,
         status: p.status,
         purchasedAt: p.purchasedAt,
@@ -460,6 +473,9 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       .map((p) => ({
         number: p.number,
         buyer: p.buyerPublic,       // "Juan S." — sin apellido completo
+        // Ciudad publica. Se omite la clave si no la dieron, para no ensuciar
+        // el JSON con nulls (y el schema la marca opcional).
+        ...(p.buyerCity ? { city: p.buyerCity } : {}),
         purchasedAt: p.purchasedAt,
         verifiedAt: p.verifiedAt,
       }));

@@ -1170,7 +1170,7 @@ VIEWS.comprobantes = async (el) => {
                 ${esGanador ? `<span class="badge-win">🏆 GANADOR</span> ` : ""}
                 ${esc(p.buyer)} · Número ${padNum(p.number, max)}
               </div>
-              <div class="meta">${esc(p.method)} · ${p.contact?.phone ? esc(p.contact.phone) : "sin teléfono"} · ${new Date(p.purchasedAt).toLocaleString("es-CO")}</div>
+              <div class="meta">${esc(p.method)} · ${p.contact?.phone ? esc(p.contact.phone) : "sin teléfono"}${p.city ? ` · 📍 ${esc(p.city)}` : ""} · ${new Date(p.purchasedAt).toLocaleString("es-CO")}</div>
               ${p.hasReceipt
                 ? `<button class="btn-link" data-receipt="${esc(p.id)}">🧾 Ver comprobante del pago</button>`
                 : p.method === "MANUAL" ? `<div class="meta">⏳ Sin comprobante todavía</div>` : ""}

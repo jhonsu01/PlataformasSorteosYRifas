@@ -137,7 +137,7 @@ data class PaymentInfo(
     val methods: List<PaymentMethod>,
 )
 
-data class Sold(val number: Int, val buyer: String)
+data class Sold(val number: Int, val buyer: String, val city: String = "")
 data class DrawWinner(val number: Int, val buyer: String)
 
 /** Resumen para el selector de rifas (GET /api/raffles). */
@@ -477,12 +477,12 @@ private fun RaffleScreen(
                 etiqueta = padNum(n, raffle!!.max), priceCents = raffle!!.priceCents,
                 pago = pago,
                 onDismiss = { buyNumber = null },
-                onConfirm = { first, last, phone, metodo ->
+                onConfirm = { first, last, phone, city, metodo ->
                     buyNumber = null
                     busyMsg = "Reservando número ${padNum(n, raffle!!.max)}…"
                     scope.launch {
                         try {
-                            val c = reserve(backendBase, slug, n, first, last, phone, metodo)
+                            val c = reserve(backendBase, slug, n, first, last, phone, city, metodo)
                             // Se guarda ANTES de pagar: si el pago queda pendiente,
                             // el comprador igual puede seguirlo en "Mis números".
                             guardarMiCompra(prefs, MiCompra(c.purchaseId, slug, n))
@@ -988,11 +988,12 @@ private fun PurchaseDialog(
     etiqueta: String, priceCents: Long,
     pago: PaymentInfo,
     onDismiss: () -> Unit,
-    onConfirm: (String, String, String, String) -> Unit,
+    onConfirm: (String, String, String, String, String) -> Unit,
 ) {
     var first by remember { mutableStateOf("") }
     var last by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
+    var city by remember { mutableStateOf("") }
     // Si la rifa solo acepta uno, no se pregunta: se usa ese.
     var metodo by remember {
         mutableStateOf(if (pago.gatewayEnabled) "WOMPI" else "MANUAL")
@@ -1007,7 +1008,7 @@ private fun PurchaseDialog(
                 Text("Precio: ${formatCop(priceCents)}", fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Solo se publicará tu nombre y la inicial del apellido.",
+                    "Solo se publicará tu nombre, la inicial del apellido y tu ciudad.",
                     fontSize = 11.sp, color = Color.Gray,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -1016,6 +1017,8 @@ private fun PurchaseDialog(
                 OutlinedTextField(last, { last = it }, label = { Text("Apellido") }, singleLine = true)
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(phone, { phone = it }, label = { Text("Teléfono") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(city, { city = it }, label = { Text("Ciudad (opcional)") }, singleLine = true)
 
                 if (puedeElegir) {
                     Spacer(Modifier.height(14.dp))
@@ -1041,7 +1044,7 @@ private fun PurchaseDialog(
         confirmButton = {
             TextButton(
                 enabled = first.isNotBlank() && last.isNotBlank(),
-                onClick = { onConfirm(first.trim(), last.trim(), phone.trim(), metodo) },
+                onClick = { onConfirm(first.trim(), last.trim(), phone.trim(), city.trim(), metodo) },
             ) { Text(if (metodo == "MANUAL") "Ver datos de pago" else "Ir a pagar") }
         },
         dismissButton = { TextButton(onDismiss) { Text("Cancelar") } },
@@ -1337,7 +1340,7 @@ private fun wompiCheckoutUrl(c: Checkout): String {
 
 private suspend fun reserve(
     backendBase: String, slug: String, number: Int,
-    first: String, last: String, phone: String,
+    first: String, last: String, phone: String, city: String,
     method: String = "WOMPI",
 ): Checkout {
     val body = JSONObject().apply {
@@ -1345,6 +1348,8 @@ private suspend fun reserve(
         put("method", method)
         put("buyer", JSONObject().apply {
             put("firstName", first); put("lastName", last); put("phone", phone)
+            // Ciudad: publica. Solo se manda si la dieron.
+            if (city.isNotBlank()) put("city", city)
         })
     }
     val res = JSONObject(httpPost("$backendBase/api/raffles/$slug/reserve", body.toString()))
@@ -1456,7 +1461,7 @@ private fun parseSold(o: JSONObject): List<Sold> {
     return buildList {
         for (i in 0 until arr.length()) {
             val s = arr.getJSONObject(i)
-            add(Sold(s.getInt("number"), s.getString("buyer")))
+            add(Sold(s.getInt("number"), s.getString("buyer"), s.optString("city", "")))
         }
     }
 }

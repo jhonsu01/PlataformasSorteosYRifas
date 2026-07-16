@@ -6,7 +6,10 @@ import { notFound } from "next/navigation";
 import Countdown from "../Countdown.jsx";
 import {
   getRifa, listRifas, copFormat, padNum, statusEs, accentOf, accentInk, regimeEs,
+  BACKEND_BASE, APK_RELEASE_URL,
 } from "../../lib/rifas.js";
+import NumerosCliente from "./NumerosCliente.jsx";
+import CompraResultado from "./CompraResultado.jsx";
 
 export const revalidate = 60;
 
@@ -38,7 +41,7 @@ export async function generateMetadata({ params }) {
   };
 }
 
-export default async function RifaPage({ params }) {
+export default async function RifaPage({ params, searchParams }) {
   const data = await getRifa(params.slug);
   if (!data) notFound();
 
@@ -46,7 +49,6 @@ export default async function RifaPage({ params }) {
   const { min, max } = raffle.numberRange;
   const total = max - min + 1;
   const ganador = draw?.winner ?? raffle.winner ?? null;
-  const vendidos = new Map(sold.map((s) => [s.number, s]));
 
   const accent = accentOf(raffle);
   const media = raffle.media || {};
@@ -54,9 +56,8 @@ export default async function RifaPage({ params }) {
   const destacados = items.filter((i) => i.featured);
   const totalPremio = raffle.prizeTotalCents || 0;
   const pct = total ? Math.round((sold.length / total) * 100) : 0;
-
-  const numeros = [];
-  for (let n = min; n <= max; n++) numeros.push(n);
+  const activa = raffle.status === "ACTIVE" && !ganador;
+  const compraId = searchParams?.compra || null;
 
   return (
     // El acento entra como variable CSS. Es hex validado en el backend Y
@@ -138,6 +139,9 @@ export default async function RifaPage({ params }) {
           )}
         </div>
       </header>
+
+      {/* Al volver de Wompi: estado del pago. */}
+      {compraId && <CompraResultado purchaseId={compraId} backendBase={BACKEND_BASE} />}
 
       {ganador && (
         <section className="section">
@@ -239,29 +243,38 @@ export default async function RifaPage({ params }) {
             <h2>Los números</h2>
           </div>
 
-          <div className="legend">
-            <span><i className="dot" style={{ background: "var(--accent)" }} /> Vendido</span>
-            <span><i className="dot" style={{ background: "var(--panel)", border: "1px solid var(--line)" }} /> Libre</span>
-            {ganador && <span><i className="dot" style={{ background: "var(--gold)" }} /> Ganador</span>}
-          </div>
-
-          <div className="grid-nums">
-            {numeros.map((n) => {
-              const s = vendidos.get(n);
-              const esGanador = ganador?.number === n;
-              return (
-                <div
-                  key={n}
-                  className={`num${esGanador ? " win" : s ? " sold" : ""}`}
-                  title={s ? `${padNum(n, max)} — ${s.buyer}` : `${padNum(n, max)} — libre`}
-                >
-                  {padNum(n, max)}
-                </div>
-              );
-            })}
-          </div>
+          <NumerosCliente
+            slug={raffle.slug}
+            min={min}
+            max={max}
+            priceCents={raffle.priceCents}
+            activa={activa}
+            sold={sold}
+            winner={ganador}
+            backendBase={BACKEND_BASE}
+          />
         </div>
       </section>
+
+      {/* ---------------- Invitacion al APK ---------------- */}
+      {activa && (
+        <section className="section">
+          <div className="wrap">
+            <div className="apk-invite">
+              <div>
+                <strong>¿Prefieres la app?</strong>
+                <p className="mut small" style={{ margin: "4px 0 0" }}>
+                  Con la app de Android sigues tus números, recibes el estado de tus pagos y
+                  compras más rápido. También puedes comprar aquí mismo, sin instalar nada.
+                </p>
+              </div>
+              <a href={APK_RELEASE_URL} target="_blank" rel="noreferrer" className="btn btn-ghost">
+                📱 Descargar el APK
+              </a>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ---------------- Participantes ---------------- */}
       {sold.length > 0 && (
@@ -278,7 +291,7 @@ export default async function RifaPage({ params }) {
             <div className="people">
               {sold.map((s) => (
                 <div className="person" key={s.number}>
-                  <span>{s.buyer}</span>
+                  <span>{s.buyer}{s.city ? <span className="mut"> — {s.city}</span> : null}</span>
                   <b>{padNum(s.number, max)}</b>
                 </div>
               ))}

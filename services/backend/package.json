@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "migrate": "node src/migrate.js",
     "create-admin": "node --env-file-if-exists=.env.local src/create-admin.js",
-    "test": "node --test"
+    "//test": "--test-concurrency=1: los archivos de test se corren de a uno. Varios tocan el MISMO PostgreSQL (reserva, rate limit, /health) y correrlos en paralelo genera contencion de conexiones y resultados intermitentes. En serie es determinista; el costo en tiempo es minimo (los tests en memoria son instantaneos).",
+    "test": "node --test --test-concurrency=1"
   },
   "dependencies": {
     "pg": "^8.22.0"

@@ -114,6 +114,17 @@ export const DISCLAIMER =
 
 export const KOFI_URL = "https://ko-fi.com/V7V81LV7GX";
 
+// URL del backend para COMPRAR desde la web (reservar, pagar, subir comprobante).
+// La LECTURA sigue siendo de GitHub; solo la transaccion necesita el backend.
+// Configurable en Vercel con BACKEND_PUBLIC_BASE.
+export const BACKEND_BASE =
+  (process.env.BACKEND_PUBLIC_BASE || "https://plataformas-sorteos-y-rifas.vercel.app")
+    .replace(/\/+$/, "");
+
+// Pagina de descargas del APK (siempre la ultima release).
+export const APK_RELEASE_URL =
+  "https://github.com/jhonsu01/PlataformasSorteosYRifas/releases/latest";
+
 export const regimeEs = (r) =>
   ({ REGULADA: "Sorteo regulado", DESCENTRALIZADA: "Sorteo descentralizado" }[r] || null);
 

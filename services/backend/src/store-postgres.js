@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { httpError, pseudonym, motivoNoDisponible } from "./store.js";
+import { httpError, pseudonym, motivoNoDisponible, normalizeCity } from "./store.js";
 import {
   normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
 } from "./raffle-media.js";
@@ -29,7 +29,7 @@ const iso = (d) => (d ? new Date(d).toISOString() : null);
  * red para acabar descartados. La imagen se pide explicitamente con getReceipt.
  */
 const COLS_PURCHASE = `id, slug, number, method, status, reference, amount_cents,
-  buyer_public, private, wompi_transaction_id, purchased_at, verified_at,
+  buyer_public, buyer_city, private, wompi_transaction_id, purchased_at, verified_at,
   approved_by, note, receipt_at`;
 
 // Lista blanca explicita: esta forma ES la que se publica a GitHub. Un `SELECT *`
@@ -74,6 +74,7 @@ function mapPurchase(p) {
     reference: p.reference,
     amountCents: Number(p.amount_cents),
     buyerPublic: p.buyer_public,
+    buyerCity: p.buyer_city || null,
     private: p.private || {},
     // Solo SI hay comprobante y cuando llego. Los BYTES nunca entran en esta
     // forma: se piden aparte (getReceipt) y solo con rol autorizado.
@@ -319,10 +320,11 @@ export async function createPostgresStore(
 
       // 2) Crear la compra.
       const { rows } = await c.query(
-        `INSERT INTO purchases (id,slug,number,method,status,reference,amount_cents,buyer_public,private)
-         VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8) RETURNING *`,
+        `INSERT INTO purchases (id,slug,number,method,status,reference,amount_cents,buyer_public,buyer_city,private)
+         VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9) RETURNING *`,
         [id, slug, number, method, reference, raffle.priceCents,
          pseudonym(buyer.firstName, buyer.lastName),
+         normalizeCity(buyer.city),
          JSON.stringify({ phone: buyer.phone || null, email: buyer.email || null, document: buyer.document || null })]
       );
 
@@ -539,7 +541,7 @@ export async function createPostgresStore(
   async function publicNumbers(slug) {
     await getRaffle(slug);
     const { rows } = await q(
-      `SELECT number, buyer_public, purchased_at, verified_at
+      `SELECT number, buyer_public, buyer_city, purchased_at, verified_at
          FROM purchases WHERE slug=$1 AND status='APPROVED' ORDER BY number`,
       [slug]
     );
@@ -548,6 +550,8 @@ export async function createPostgresStore(
       sold: rows.map((r) => ({
         number: r.number,
         buyer: r.buyer_public,
+        // Ciudad publica: se omite la clave si no la dieron.
+        ...(r.buyer_city ? { city: r.buyer_city } : {}),
         purchasedAt: iso(r.purchased_at),
         verifiedAt: iso(r.verified_at),
       })),
@@ -584,7 +588,7 @@ export async function createPostgresStore(
     // desde la base solo para descartarlas aqui. El comprobante se pide aparte.
     const { rows } = await q(
       `SELECT id, slug, number, method, status, reference, amount_cents, buyer_public,
-              private, wompi_transaction_id, purchased_at, verified_at, approved_by,
+              buyer_city, private, wompi_transaction_id, purchased_at, verified_at, approved_by,
               note, receipt_at
          FROM purchases WHERE slug=$1 AND ($2::text IS NULL OR status=$2)
         ORDER BY purchased_at`,
@@ -593,7 +597,7 @@ export async function createPostgresStore(
     return rows.map((r) => {
       const p = mapPurchase(r);
       return {
-        id: p.id, number: p.number, buyer: p.buyerPublic, method: p.method,
+        id: p.id, number: p.number, buyer: p.buyerPublic, city: p.buyerCity, method: p.method,
         status: p.status, purchasedAt: p.purchasedAt, verifiedAt: p.verifiedAt,
         hasReceipt: p.hasReceipt, receiptAt: p.receiptAt, contact: p.private,
       };

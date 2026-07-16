@@ -23,6 +23,11 @@
             "minLength": 3,
             "maxLength": 40
           },
+          "city": {
+            "type": "string",
+            "description": "Ciudad del comprador (publica, gruesa). Ej: 'Medellin'. Opcional.",
+            "maxLength": 60
+          },
           "purchasedAt": { "type": "string", "format": "date-time" },
           "verifiedAt": { "type": "string", "format": "date-time" }
         }
