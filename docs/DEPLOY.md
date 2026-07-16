@@ -130,10 +130,12 @@ Si `storage` dice `memory`, falta `DATABASE_URL`. Si `wompiConfigured` es `false
 
 ### Qué se despliega
 
-- `api/[...path].js` — catch-all: todo `/api/*` entra al enrutador de `src/app.js`.
-- `vercel.json` — reescribe `/health`, incluye `migrations/**` en la función y registra el
-  **cron** que libera reservas vencidas cada 10 min (`/api/cron/expire`, protegido con
-  `CRON_SECRET`).
+- `api/index.js` — **una sola función**. `vercel.json` reescribe `/(.*)` →
+  `/api/index?__path=/$1`, y `src/app.js` lee la ruta de `__path`. (Se usa una función única
+  y no `api/[...path].js`: los catch-all `[...]` son convención de Next.js, no de una función
+  Node suelta, y con ellos el webhook de Wompi daba 404.)
+- `vercel.json` — el rewrite anterior, incluye `migrations/**` en la función y registra el
+  **cron** que libera reservas vencidas (`/api/cron/expire`, protegido con `CRON_SECRET`).
 
 > No se usa `src/server.js` en Vercel: ese archivo es solo para `npm start` local.
 
@@ -304,21 +306,41 @@ local por `http://`).
 
 ## 6. Web pública (opcional)
 
-`apps/web` es un proyecto Next.js aparte:
+`apps/web` es un proyecto Next.js aparte (**segundo proyecto de Vercel**, con
+**Root Directory = `apps/web`**). Variables (Production):
+
+| Variable | Valor |
+| --- | --- |
+| `RIFFLES_OWNER` | tu organización de GitHub (de dónde lee las rifas publicadas) |
+| `BACKEND_PUBLIC_BASE` | `https://<tu-backend>.vercel.app` (para **comprar desde la web**) |
+| `RIFFLES_BRANCH` | `main` (opcional) |
 
 ```bash
 cd apps/web
 vercel --prod
-# Variable: NEXT_PUBLIC_GITHUB_RAW_BASE  (o apunta al backend)
 ```
+
+> La web **lee** el estado de GitHub (se verifica aunque el backend esté caído) y solo
+> **compra** llamando al backend (`BACKEND_PUBLIC_BASE`). Conviene, además, poner
+> `WEB_PUBLIC_BASE` en el **backend** apuntando a esta web: así el About del repo de cada
+> rifa enlaza al sitio público.
 
 ---
 
 ## Seguridad antes de producción
 
-- [ ] Cambiar Wompi a `prod` (`WOMPI_ENV=prod` + llaves `pub_prod_`/`prv_prod_`).
-- [ ] Añadir **autenticación + 2FA** al admin y a los endpoints de escritura
-      (hoy no hay auth: cualquiera con la URL puede aprobar comprobantes).
-- [ ] `SEED_DEMO` debe quedar sin definir en producción (no siembra la rifa demo).
-- [ ] Rate limiting en `/reserve` y en el webhook.
+Autenticación + 2FA y rate limiting **ya están implementados**; esto es la lista de
+verificación de que quedaron bien puestos:
+
+- [ ] Wompi en `prod`: `WOMPI_ENV=prod` + las 4 llaves `pub_prod_` / `prod_integrity_` /
+      `prod_events_` (la privada `prv_prod_` no se usa aquí). Registrar el webhook en el
+      panel de Wompi **de producción**.
+- [ ] Rotar cualquier secreto de *test* que haya estado expuesto (p. ej. pegado por error).
+- [ ] Cuenta de administrador creada (`npm run create-admin`) y **2FA activo**.
+- [ ] `SEED_DEMO` sin definir en producción (no siembra la rifa demo).
+- [ ] Rate limiting con valores holgados (recuerda el CGNAT del móvil colombiano); ajusta
+      `RATE_LIMIT_*` solo si tienes motivo.
 - [ ] Backups de Neon activados.
+
+> Guía completa para clonar y desplegar desde cero: la sección
+> **🚀 Guía de implementación paso a paso** del [`README`](../README.md).
