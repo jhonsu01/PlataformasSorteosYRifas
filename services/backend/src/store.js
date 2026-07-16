@@ -80,6 +80,8 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       manualEnabled: cfg.manualEnabled !== false,
       // Responsable de la rifa: SI publico (transparencia legal, ver legal.js).
       organizer: normalizeOrganizer(cfg.organizer),
+      // Para ordenar "las mas recientes" en el admin.
+      createdAt: cfg.createdAt || new Date().toISOString(),
       // Premio mostrable. El total NO se guarda: se calcula al leer.
       media: normalizeMedia(cfg.media),
       prizeItems: normalizePrizeItems(cfg.prizeItems),
@@ -305,6 +307,7 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
         repoFullName: r.repoFullName || null,
         prizeTotalCents: prizeTotalCents(r.prizeItems),
         cover: r.media?.cover || null,
+        createdAt: r.createdAt || null,
       };
     });
   }

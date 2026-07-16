@@ -11,7 +11,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,6 +67,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -580,21 +584,57 @@ private fun Content(
     val total = (raffle.max - raffle.min + 1).coerceAtLeast(0)
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
+    // Si el sorteo ya tiene ganador, se abre en el filtro GANADOR: asi el numero
+    // ganador aparece de primero, sin desplazarse por 999 casillas.
+    var filtro by remember(winner) { mutableStateOf(if (winner != null) "GANADOR" else "TODOS") }
+    var busqueda by remember { mutableStateOf("") }
+
+    // Rejilla filtrada. Barata de recalcular (max ~1000) en cada tecla o filtro.
+    val numeros = remember(raffle, filtro, busqueda, soldByNumber, apartados, winner) {
+        val q = busqueda.trim()
+        (raffle.min..raffle.max).filter { n ->
+            val etiqueta = padNum(n, raffle.max)
+            val coincideBusqueda = q.isEmpty() || etiqueta.contains(q)
+            val coincideFiltro = when (filtro) {
+                "VENDIDOS" -> soldByNumber.containsKey(n)
+                "LIBRES" -> !soldByNumber.containsKey(n) && n !in apartados && winner?.number != n
+                "APARTADOS" -> n in apartados
+                "GANADOR" -> winner?.number == n
+                else -> true
+            }
+            coincideBusqueda && coincideFiltro
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Header(raffle, sold.size, total, onCambiarRifa, onMisNumeros)
         if (winner != null) WinnerBanner(winner, raffle.max)
-        Legend(hayApartados = apartados.isNotEmpty())
+        FilterBar(
+            filtro = filtro, busqueda = busqueda, hayGanador = winner != null,
+            hayApartados = apartados.isNotEmpty(),
+            onFiltro = { filtro = it }, onBusqueda = { busqueda = it },
+        )
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 62.dp),
-            contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 16.dp + navBottom),
+            contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 16.dp + navBottom),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            gridItems((raffle.min..raffle.max).toList()) { n ->
+            gridItems(numeros) { n ->
                 val s = soldByNumber[n]
                 NumberCell(padNum(n, raffle.max), s, winner?.number == n, n in apartados) {
                     if (s == null) onPickNumber(n)
+                }
+            }
+            if (numeros.isEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        "No hay números en este filtro.",
+                        color = Color.Gray, fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth().padding(top = 20.dp),
+                        textAlign = TextAlign.Center,
+                    )
                 }
             }
             // Pie a lo ancho de toda la rejilla: responsable + descargo legal.
@@ -602,6 +642,60 @@ private fun Content(
                 RaffleFooter(raffle.organizer)
             }
         }
+    }
+}
+
+@Composable
+private fun FilterBar(
+    filtro: String, busqueda: String, hayGanador: Boolean, hayApartados: Boolean,
+    onFiltro: (String) -> Unit, onBusqueda: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        OutlinedTextField(
+            value = busqueda,
+            onValueChange = { v -> onBusqueda(v.filter { it.isDigit() }) },
+            label = { Text("Buscar número") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            trailingIcon = {
+                if (busqueda.isNotEmpty()) {
+                    Text("✕", modifier = Modifier.clickable { onBusqueda("") }.padding(12.dp), color = Color.Gray)
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // Los filtros SON la leyenda: cada color es tambien un boton para filtrar.
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip("Todos", FreeGray, filtro == "TODOS") { onFiltro("TODOS") }
+            FilterChip("Vendidos", BrandViolet, filtro == "VENDIDOS") { onFiltro("VENDIDOS") }
+            FilterChip("Libres", FreeGray, filtro == "LIBRES") { onFiltro("LIBRES") }
+            if (hayApartados) FilterChip("Apartados", Apartado, filtro == "APARTADOS") { onFiltro("APARTADOS") }
+            if (hayGanador) FilterChip("Ganador", Gold, filtro == "GANADOR") { onFiltro("GANADOR") }
+        }
+    }
+}
+
+@Composable
+private fun FilterChip(texto: String, color: Color, activo: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .clickable { onClick() }
+            .background(if (activo) color else Color.Transparent, RoundedCornerShape(20.dp))
+            .border(1.dp, if (activo) color else Color(0xFFD1D5DB), RoundedCornerShape(20.dp))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.width(10.dp).height(10.dp).background(color, CircleShape))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            texto,
+            fontSize = 12.sp,
+            color = if (activo && color != FreeGray && color != Apartado) Color.White else Color(0xFF374151),
+            fontWeight = if (activo) FontWeight.Bold else FontWeight.Normal,
+        )
     }
 }
 
@@ -847,29 +941,6 @@ private fun WinnerBanner(winner: DrawWinner, max: Int) {
             Spacer(Modifier.height(4.dp))
             Text("Número ${padNum(winner.number, max)} — ${winner.buyer}", fontSize = 15.sp)
         }
-    }
-}
-
-@Composable
-private fun Legend(hayApartados: Boolean) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        LegendItem(BrandViolet, "Vendido")
-        LegendItem(FreeGray, "Libre")
-        // Solo si los hay: una leyenda con un color que no esta en pantalla confunde.
-        if (hayApartados) LegendItem(Apartado, "Apartado")
-        LegendItem(Gold, "Ganador")
-    }
-}
-
-@Composable
-private fun LegendItem(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.width(14.dp).height(14.dp).background(color, CircleShape))
-        Spacer(Modifier.width(6.dp))
-        Text(label, fontSize = 12.sp, color = Color.Gray)
     }
 }
 

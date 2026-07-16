@@ -62,11 +62,23 @@ async function ownerIsOrg(owner) {
   return (await r.json()).type === "Organization";
 }
 
+/** URL publica (Vercel) de esta rifa: el "homepage" del repo apunta aqui. */
+const webUrlDe = (slug) => `${config.webPublicBase}/${slug}`;
+
 /** Crea el repo de la rifa si no existe. Devuelve true si lo acaba de crear. */
 async function ensureRepo(slug, raffle) {
   const owner = config.github.owner;
+  const homepage = webUrlDe(slug);
   const existe = await gh(`/repos/${owner}/${slug}`);
-  if (existe.ok) return false;
+  if (existe.ok) {
+    // El repo ya existe: si el About (homepage) no apunta a la web, se corrige
+    // una vez. Reutiliza este GET, sin llamada extra, y luego queda como no-op.
+    const info = await existe.json().catch(() => ({}));
+    if (info.homepage !== homepage) {
+      await gh(`/repos/${owner}/${slug}`, { method: "PATCH", body: { homepage } });
+    }
+    return false;
+  }
   if (existe.status !== 404) {
     throw new Error(`Error consultando ${owner}/${slug}: HTTP ${existe.status}`);
   }
@@ -77,6 +89,8 @@ async function ensureRepo(slug, raffle) {
     body: {
       name: slug,
       description: `Estado publico del sorteo: ${raffle.title}`,
+      // About -> web publica: quien llega al repo encuentra el sitio de la rifa.
+      homepage,
       private: false,        // el sentido es que sea auditable por cualquiera
       auto_init: true,       // crea el commit inicial (rama main)
       has_issues: false,
@@ -233,6 +247,7 @@ export async function publishPublicState(store, slug, { draw = null } = {}) {
       created: nuevo,
       repo,
       url: `https://github.com/${repo}`,
+      webUrl: webUrlDe(slug),
       rawBase: `https://raw.githubusercontent.com/${repo}/${config.github.branch}/public`,
       commit,
     };

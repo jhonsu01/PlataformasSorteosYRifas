@@ -176,6 +176,45 @@ button:hover { filter: brightness(1.05); }
   background: var(--bg);
 }
 
+.oculto { display: none; }
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+.tabs-inline { border-bottom: 0; margin-bottom: 0; }
+
+/* Rifa finalizada: se distingue de las activas de un vistazo. */
+.rifa-card.fin { border-color: var(--gold); background: linear-gradient(180deg, #fffdf5, #fff); }
+.badge-fin {
+  background: var(--gold);
+  color: #78350f;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.link-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 3px; }
+.link-copy {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 6px;
+  color: var(--muted);
+}
+.link-copy:hover { border-color: var(--violet); color: var(--violet); }
+
 .modal { display: none; }
 .modal.show {
   display: flex;

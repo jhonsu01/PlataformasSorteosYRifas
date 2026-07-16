@@ -76,6 +76,16 @@ async function abrirExterno(url) {
   }
 }
 
+/** Copia texto al portapapeles y avisa. */
+async function copiar(text, que = "Enlace") {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${que} copiado`);
+  } catch {
+    toast("No se pudo copiar", false);
+  }
+}
+
 // --------------------------- Sesion ---------------------------
 // El access token vive en memoria (no se persiste). El refresh sí, para no
 // re-pedir la clave en cada arranque; se rota en cada uso.
@@ -389,42 +399,77 @@ function fechaPorDefecto(dias) {
   return local.toISOString().slice(0, 16);
 }
 
-function repoLinea(r) {
+/** ¿La rifa ya se sorteó (tiene ganador)? */
+function esFinalizada(r) {
+  return r.status === "DRAWN" || Boolean(r.winner);
+}
+
+/** Estado de la rifa en español. */
+function estadoRifaEs(r) {
+  if (esFinalizada(r)) return "Finalizada";
+  return ({
+    ACTIVE: "Activa",
+    SALES_CLOSED: "Ventas cerradas",
+    POSTPONED: "Pospuesta",
+    ARCHIVED: "Archivada",
+    DRAFT: "Borrador",
+  }[r.status] || r.status);
+}
+
+// Filtro de "Rifas existentes" y si el formulario de nueva rifa esta desplegado.
+let rifasFiltro = "TODAS";
+let nuevaRifaAbierta = false;
+
+/** Enlaces del repo y de la web publica, con abrir-externo y copiar. */
+function repoLinea(r, webBase) {
   if (!r.publishedAt) return `<span class="muted small">Sin publicar</span>`;
   const url = `https://github.com/${r.repoFullName}`;
+  const web = webBase ? `${webBase}/${r.slug}` : "";
   const cuando = new Date(r.publishedAt).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" });
-  return `<a href="${esc(url)}" target="_blank" class="repo-link">📖 ${esc(r.repoFullName)}</a>
-          <span class="muted small" title="Última publicación"> · ${esc(cuando)}</span>`;
+  return `
+    <div class="link-row">
+      <a href="#" class="repo-link" data-open="${esc(url)}">📖 ${esc(r.repoFullName)}</a>
+      <button class="link-copy" data-copy="${esc(url)}" title="Copiar enlace de GitHub">⧉</button>
+      <span class="muted small"> · ${esc(cuando)}</span>
+    </div>
+    ${web ? `
+    <div class="link-row">
+      <a href="#" class="repo-link" data-open="${esc(web)}">🌐 Ver la web pública</a>
+      <button class="link-copy" data-copy="${esc(web)}" title="Copiar enlace de la web">⧉</button>
+    </div>` : ""}`;
 }
 
 VIEWS.rifas = async (el) => {
-  await checkHealth();
+  const h = await checkHealth();
   if (!backendOnline) { el.innerHTML = backendBanner(); return; }
   const { raffles } = await api("/api/raffles");
+  const webBase = h?.webPublicBase || "";
+
+  // Recientes primero. El backend ya ordena por created_at asc; se invierte.
+  const ordenadas = [...raffles].sort((a, b) =>
+    new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  const visibles = ordenadas.filter((r) => {
+    if (rifasFiltro === "ACTIVAS") return r.status === "ACTIVE" && !esFinalizada(r);
+    if (rifasFiltro === "FINALIZADAS") return esFinalizada(r);
+    return true; // TODAS
+  });
+
+  const cuenta = {
+    TODAS: raffles.length,
+    ACTIVAS: raffles.filter((r) => r.status === "ACTIVE" && !esFinalizada(r)).length,
+    FINALIZADAS: raffles.filter(esFinalizada).length,
+  };
+  const chip = (id, txt) =>
+    `<button class="tab ${rifasFiltro === id ? "tab-on" : ""}" data-filtro="${id}">${txt} (${cuenta[id]})</button>`;
+
   el.innerHTML = `
-    <header class="topbar"><div><h1>Rifas</h1><p class="muted">Gestiona los sorteos</p></div></header>
-    <section class="panel">
-      <h2>Rifas existentes</h2>
-      <div class="rifa-grid">
-        ${raffles.map((r) => `
-          <div class="rifa-card ${r.slug === cfg.raffleSlug ? "sel" : ""}">
-            ${r.cover ? `<img class="rifa-cover" src="${esc(r.cover)}" alt="" />` : ""}
-            <div class="rifa-title">${esc(r.title)}</div>
-            <div class="muted small">${esc(r.slug)} · ${esc(r.status)}</div>
-            <div class="rifa-meta">
-              ${r.sold}/${r.total} vendidos · ${copFormat(r.priceCents)}
-              ${r.prizeTotalCents ? `<br/>Premio: ${copFormat(r.prizeTotalCents)}` : ""}
-            </div>
-            <div class="repo-line">${repoLinea(r)}</div>
-            <div class="rifa-acciones">
-              <button class="btn-approve" data-sel="${esc(r.slug)}">${r.slug === cfg.raffleSlug ? "Activa" : "Seleccionar"}</button>
-              <button class="btn-secondary" data-premio="${esc(r.slug)}">Premio y fotos</button>
-              <button class="btn-link" data-pub="${esc(r.slug)}">${r.publishedAt ? "Republicar" : "Publicar a GitHub"}</button>
-            </div>
-          </div>`).join("")}
-      </div>
-    </section>
-    <section class="panel">
+    <header class="topbar">
+      <div><h1>Rifas</h1><p class="muted">Gestiona los sorteos</p></div>
+      <button id="btn-nueva" class="btn-approve">${nuevaRifaAbierta ? "✕ Cerrar" : "＋ Nueva rifa"}</button>
+    </header>
+
+    <section class="panel ${nuevaRifaAbierta ? "" : "oculto"}" id="panel-nueva">
       <h2>Nueva rifa</h2>
       <form id="form-rifa" class="form-grid">
         <label>Título<input name="title" required placeholder="Sorteo Moto 0km" /></label>
@@ -446,7 +491,54 @@ VIEWS.rifas = async (el) => {
         </label>
         <div class="form-actions"><button type="submit" class="btn-approve">Crear rifa</button></div>
       </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Rifas existentes</h2>
+        <div class="tabs tabs-inline">
+          ${chip("TODAS", "Todas")}
+          ${chip("ACTIVAS", "Activas")}
+          ${chip("FINALIZADAS", "Finalizadas")}
+        </div>
+      </div>
+      <p class="muted small">Ordenadas por más recientes.</p>
+      <div class="rifa-grid">
+        ${visibles.length === 0 ? `<p class="muted">No hay rifas en este filtro.</p>` : ""}
+        ${visibles.map((r) => {
+          const fin = esFinalizada(r);
+          return `
+          <div class="rifa-card ${r.slug === cfg.raffleSlug ? "sel" : ""} ${fin ? "fin" : ""}">
+            ${r.cover ? `<img class="rifa-cover" src="${esc(r.cover)}" alt="" />` : ""}
+            <div class="rifa-title">
+              ${fin ? `<span class="badge-fin">🏆 Finalizada</span> ` : ""}${esc(r.title)}
+            </div>
+            <div class="muted small">${esc(r.slug)} · ${esc(estadoRifaEs(r))}</div>
+            <div class="rifa-meta">
+              ${r.sold}/${r.total} vendidos · ${copFormat(r.priceCents)}
+              ${r.prizeTotalCents ? `<br/>Premio: ${copFormat(r.prizeTotalCents)}` : ""}
+            </div>
+            <div class="repo-line">${repoLinea(r, webBase)}</div>
+            <div class="rifa-acciones">
+              <button class="btn-approve" data-sel="${esc(r.slug)}">${r.slug === cfg.raffleSlug ? "Activa" : "Seleccionar"}</button>
+              <button class="btn-secondary" data-premio="${esc(r.slug)}">Premio y fotos</button>
+              <button class="btn-link" data-pub="${esc(r.slug)}">${r.publishedAt ? "Republicar" : "Publicar a GitHub"}</button>
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
     </section>`;
+
+  $("#btn-nueva").onclick = () => { nuevaRifaAbierta = !nuevaRifaAbierta; render(); };
+  el.querySelectorAll("[data-filtro]").forEach((b) => {
+    b.onclick = () => { rifasFiltro = b.dataset.filtro; render(); };
+  });
+  el.querySelectorAll("[data-open]").forEach((b) => {
+    b.onclick = (e) => { e.preventDefault(); abrirExterno(b.dataset.open); };
+  });
+  el.querySelectorAll("[data-copy]").forEach((b) => {
+    b.onclick = () => copiar(b.dataset.copy);
+  });
 
   el.querySelectorAll("[data-sel]").forEach((b) => {
     b.onclick = () => { cfg.raffleSlug = b.dataset.sel; saveCfg(cfg); toast(`Rifa activa: ${b.dataset.sel}`); render(); };

@@ -112,10 +112,24 @@ export async function createPostgresStore(
   });
 
   // Migraciones idempotentes al arrancar, en orden alfabetico (001_, 002_, ...).
+  //
+  // Se toma un advisory lock de sesion mientras corren: dos conexiones
+  // ejecutando el DDL a la vez (varios contenedores en arranque en frio contra
+  // Neon, o varios archivos de test) chocan en el catalogo del sistema y lanzan
+  // "duplicate key value ... pg_type_typname_nsp_index". El lock serializa esos
+  // arranques; el segundo espera, encuentra todo ya creado (IF NOT EXISTS) y
+  // sigue. Se usa UNA conexion para lock+migraciones (el lock es por sesion).
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
   if (!files.length) throw new Error(`Sin migraciones en ${MIGRATIONS_DIR.pathname}`);
-  for (const f of files) {
-    await pool.query(fs.readFileSync(new URL(f, MIGRATIONS_DIR), "utf8"));
+  const migConn = await pool.connect();
+  try {
+    await migConn.query("SELECT pg_advisory_lock(550716)");
+    for (const f of files) {
+      await migConn.query(fs.readFileSync(new URL(f, MIGRATIONS_DIR), "utf8"));
+    }
+  } finally {
+    await migConn.query("SELECT pg_advisory_unlock(550716)").catch(() => {});
+    migConn.release();
   }
 
   const q = (text, params) => pool.query(text, params);
@@ -560,6 +574,7 @@ export async function createPostgresStore(
       repoFullName: r.repo_full_name || null,
       prizeTotalCents: prizeTotalCents(r.prize_items || []),
       cover: r.media?.cover || null,
+      createdAt: iso(r.created_at),
     }));
   }
 

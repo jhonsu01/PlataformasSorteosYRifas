@@ -82,6 +82,14 @@ export const config = {
     owner: (process.env.GITHUB_RIFFLES_OWNER || process.env.GITHUB_RIFFLES_ORG || "").trim(),
     branch: (process.env.GITHUB_RIFFLES_BRANCH || "main").trim(),
   },
+
+  // URL base de la web publica (proyecto Vercel de apps/web). Con ella el
+  // publicador fija el "homepage" del repo de cada rifa (el About de GitHub
+  // apunta a la web) y el admin puede mostrar/copiar el enlace publico.
+  // Sin barra final: se concatena `${webPublicBase}/${slug}`.
+  webPublicBase: (process.env.WEB_PUBLIC_BASE || "https://sorteos-y-rifas-web.vercel.app")
+    .trim()
+    .replace(/\/+$/, ""),
 };
 
 export function isGithubConfigured() {
