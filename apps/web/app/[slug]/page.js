@@ -5,7 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import Countdown from "../Countdown.jsx";
 import {
-  getRifa, listRifas, copFormat, padNum, statusEs, accentOf, accentInk,
+  getRifa, listRifas, copFormat, padNum, statusEs, accentOf, accentInk, regimeEs,
 } from "../../lib/rifas.js";
 
 export const revalidate = 60;
@@ -307,8 +307,48 @@ export default async function RifaPage({ params }) {
               cada comprador. Nunca su documento, teléfono, correo ni comprobante de pago.
             </p>
           </div>
+
+          {/* Responsable del sorteo: quién lo convoca y bajo qué régimen. La
+              responsabilidad legal es suya, no del software. */}
+          <Responsable organizer={raffle.organizer} />
         </div>
       </section>
     </main>
+  );
+}
+
+function Responsable({ organizer }) {
+  const o = organizer || {};
+  const regimen = regimeEs(o.regime);
+  // Si el organizador no puso nada, no se inventa un bloque vacío: el descargo
+  // general del pie ya cubre la responsabilidad.
+  if (!o.name && !regimen) return null;
+  return (
+    <div className="note" style={{ marginTop: 18 }}>
+      <strong>Responsable de este sorteo</strong>
+      {o.name && <p style={{ margin: "8px 0 4px" }}>{o.name}</p>}
+      {regimen && (
+        <p className="small" style={{ margin: "0 0 8px" }}>
+          <span className={`chip${o.regime === "REGULADA" ? " on" : ""}`}>{regimen}</span>
+        </p>
+      )}
+      {o.authorization && (
+        <p className="small mut" style={{ margin: "0 0 8px" }}>{o.authorization}</p>
+      )}
+      {o.documents?.length > 0 && (
+        <p className="small" style={{ margin: 0 }}>
+          Documentos:{" "}
+          {o.documents.map((d, i) => (
+            <span key={i}>
+              {i > 0 && " · "}
+              <a href={d} target="_blank" rel="noreferrer">documento {i + 1} ↗</a>
+            </span>
+          ))}
+        </p>
+      )}
+      <p className="small mut" style={{ margin: "10px 0 0" }}>
+        La organización y la legalidad de este sorteo son responsabilidad de quien lo convoca.
+      </p>
+    </div>
   );
 }

@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 // `items` existe en lazy y en lazy.grid con el mismo nombre: importar ambos sin
 // alias es ambiguo y no compila.
@@ -102,6 +103,16 @@ data class Raffle(
     val cover: String? = null,
     val prizeTotalCents: Long = 0,
     val prizeItems: List<PrizeItem> = emptyList(),
+    // Responsable de la rifa (transparencia legal). Publico: viene en raffle.json.
+    val organizer: Organizer = Organizer(),
+)
+
+/** Quien convoca la rifa y bajo que regimen. Todo opcional (rifas viejas). */
+data class Organizer(
+    val name: String = "",
+    val regime: String = "",
+    val authorization: String = "",
+    val documents: List<String> = emptyList(),
 )
 
 /** Una cosa de las que componen el premio, con su valor. */
@@ -169,6 +180,30 @@ private val FreeGray = Color(0xFFEDEAF5)
 private val Apartado = Color(0xFFD9CBA8)
 
 private const val REDIRECT_URL = "https://sorteosyrifas.app/resultado"
+private const val KOFI_URL = "https://ko-fi.com/V7V81LV7GX"
+
+// Mismo texto que el README, la web y el admin.
+private const val DISCLAIMER =
+    "Sorteos y Rifas es software libre, entregado «tal cual», sin garantías. En la mayoría de " +
+        "los países las rifas y sorteos están regulados por la ley. La persona u organización que " +
+        "crea y opera cada sorteo es la única responsable de cumplir la normativa y obtener los " +
+        "permisos de su jurisdicción, de recaudar y administrar los pagos, y de entregar el premio. " +
+        "El autor del software no organiza sorteos ni se responsabiliza del uso que terceros den a " +
+        "esta herramienta ni de la legalidad de los sorteos creados con ella. Este texto no " +
+        "constituye asesoría legal."
+
+private fun regimeEs(r: String) = when (r) {
+    "REGULADA" -> "Sorteo regulado"
+    "DESCENTRALIZADA" -> "Sorteo descentralizado"
+    else -> null
+}
+
+/** Abre una URL en el navegador del sistema. */
+private fun abrirUrl(ctx: android.content.Context, url: String) {
+    runCatching {
+        ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -562,7 +597,55 @@ private fun Content(
                     if (s == null) onPickNumber(n)
                 }
             }
+            // Pie a lo ancho de toda la rejilla: responsable + descargo legal.
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                RaffleFooter(raffle.organizer)
+            }
         }
+    }
+}
+
+@Composable
+private fun RaffleFooter(organizer: Organizer) {
+    val ctx = LocalContext.current
+    val regimen = regimeEs(organizer.regime)
+    Column(Modifier.fillMaxWidth().padding(top = 20.dp)) {
+        // Bloque del responsable: solo si el organizador declaro algo.
+        if (organizer.name.isNotBlank() || regimen != null) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(FreeGray, RoundedCornerShape(14.dp))
+                    .padding(16.dp)
+            ) {
+                Text("Responsable de este sorteo", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                if (organizer.name.isNotBlank()) {
+                    Text(organizer.name, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp))
+                }
+                if (regimen != null) {
+                    Text(regimen, fontSize = 12.sp, color = BrandViolet, fontWeight = FontWeight.Medium)
+                }
+                if (organizer.authorization.isNotBlank()) {
+                    Text(organizer.authorization, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
+                }
+                organizer.documents.forEachIndexed { i, url ->
+                    Text(
+                        "Documento ${i + 1} ↗",
+                        fontSize = 12.sp, color = BrandViolet,
+                        modifier = Modifier.padding(top = 4.dp).clickable { abrirUrl(ctx, url) },
+                    )
+                }
+                Text(
+                    "La organización y la legalidad de este sorteo son responsabilidad de quien lo convoca.",
+                    fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
+        Text(
+            "Software libre «tal cual». El organizador es el único responsable de la legalidad, " +
+                "los pagos y la entrega del premio.",
+            fontSize = 10.sp, color = Color.Gray,
+            modifier = Modifier.padding(top = 12.dp),
+        )
     }
 }
 
@@ -1005,11 +1088,12 @@ private fun ManualPaymentDialog(
 @Composable
 private fun SettingsDialog(backendBase: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var b by remember { mutableStateOf(backendBase) }
+    val ctx = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Ajustes avanzados") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     "La app ya viene configurada. Cambia esto solo si el organizador " +
                         "te indicó otro servidor.",
@@ -1017,6 +1101,24 @@ private fun SettingsDialog(backendBase: String, onDismiss: () -> Unit, onSave: (
                 )
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(b, { b = it }, label = { Text("Servidor") }, singleLine = true)
+
+                Spacer(Modifier.height(20.dp))
+                Text("Apoyo", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    // Se aclara que es apoyo al SOFTWARE, no un pago de la rifa: el
+                    // comprador no debe confundirlo con la compra de un número.
+                    "Esta app es software libre y gratuito. Apoyar es voluntario y va al " +
+                        "desarrollo de la app, no a ningún sorteo.",
+                    fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(top = 2.dp),
+                )
+                Button(
+                    onClick = { abrirUrl(ctx, KOFI_URL) },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) { Text("☕ Apoyar el desarrollo") }
+
+                Spacer(Modifier.height(20.dp))
+                Text("Descargo de responsabilidad", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(DISCLAIMER, fontSize = 10.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
             }
         },
         confirmButton = { TextButton({ onSave(b.trim()) }) { Text("Guardar") } },
@@ -1254,6 +1356,15 @@ private fun parseRaffle(o: JSONObject): Raffle {
         status = o.getString("status"),
         cover = o.optJSONObject("media")?.optString("cover")?.ifBlank { null },
         prizeTotalCents = o.optLong("prizeTotalCents", 0),
+        organizer = o.optJSONObject("organizer")?.let { org ->
+            val docs = org.optJSONArray("documents")
+            Organizer(
+                name = org.optString("name", ""),
+                regime = org.optString("regime", ""),
+                authorization = org.optString("authorization", ""),
+                documents = buildList { for (i in 0 until (docs?.length() ?: 0)) add(docs!!.getString(i)) },
+            )
+        } ?: Organizer(),
         prizeItems = buildList {
             for (i in 0 until (items?.length() ?: 0)) {
                 val item = items!!.getJSONObject(i)

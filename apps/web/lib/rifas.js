@@ -100,6 +100,23 @@ export function accentInk(hex) {
   return L > 0.45 ? "#0b0b0d" : "#ffffff";
 }
 
+// --------------------------- Legal ---------------------------
+
+/** Descargo de responsabilidad. Mismo texto en README, web, APK y admin. */
+export const DISCLAIMER =
+  "Sorteos y Rifas es software libre, entregado «tal cual», sin garantías. En la mayoría de " +
+  "los países las rifas y sorteos están regulados por la ley. La persona u organización que " +
+  "crea y opera cada sorteo es la única responsable de cumplir la normativa y obtener los " +
+  "permisos de su jurisdicción, de recaudar y administrar los pagos, y de entregar el premio. " +
+  "El autor del software no organiza sorteos ni se responsabiliza del uso que terceros den a " +
+  "esta herramienta ni de la legalidad de los sorteos creados con ella. Este texto no " +
+  "constituye asesoría legal.";
+
+export const KOFI_URL = "https://ko-fi.com/V7V81LV7GX";
+
+export const regimeEs = (r) =>
+  ({ REGULADA: "Sorteo regulado", DESCENTRALIZADA: "Sorteo descentralizado" }[r] || null);
+
 export const statusEs = (s) =>
   ({
     ACTIVE: "Activo",

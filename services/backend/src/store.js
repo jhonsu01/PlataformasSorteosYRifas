@@ -10,6 +10,7 @@ import {
 import {
   normalizePaymentMethods, validarComprobante, assertMetodoPermitido, assertFechas,
 } from "./payments.js";
+import { normalizeOrganizer } from "./legal.js";
 
 // Se re-exporta para no romper a quien ya lo importaba desde aqui.
 export { httpError };
@@ -77,6 +78,8 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       paymentMethods: normalizePaymentMethods(cfg.paymentMethods),
       gatewayEnabled: cfg.gatewayEnabled !== false,
       manualEnabled: cfg.manualEnabled !== false,
+      // Responsable de la rifa: SI publico (transparencia legal, ver legal.js).
+      organizer: normalizeOrganizer(cfg.organizer),
       // Premio mostrable. El total NO se guarda: se calcula al leer.
       media: normalizeMedia(cfg.media),
       prizeItems: normalizePrizeItems(cfg.prizeItems),
@@ -353,6 +356,9 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       // Calculado, nunca almacenado: no puede contradecir al desglose.
       prizeTotalCents: prizeTotalCents(r.prizeItems),
       theme: r.theme || {},
+      // Responsable: SI se publica (transparencia legal). A diferencia de
+      // paymentMethods, aqui el organizador se identifica a proposito.
+      organizer: r.organizer || {},
       // OJO: paymentMethods NO va aqui. Esta forma se commitea a un repo publico
       // e inmutable; un numero de cuenta ahi queda para siempre. Se sirven por
       // la API (paymentInfo), que es lo que necesita quien va a comprar.
@@ -431,6 +437,7 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
     if (patch.paymentMethods !== undefined) r.paymentMethods = normalizePaymentMethods(patch.paymentMethods);
     if (patch.gatewayEnabled !== undefined) r.gatewayEnabled = Boolean(patch.gatewayEnabled);
     if (patch.manualEnabled !== undefined) r.manualEnabled = Boolean(patch.manualEnabled);
+    if (patch.organizer !== undefined) r.organizer = normalizeOrganizer(patch.organizer);
     return publicRaffle(slug);
   }
 

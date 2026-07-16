@@ -363,6 +363,37 @@ button:hover { filter: brightness(1.05); }
   margin: 0 auto;
 }
 
+/* --------------------------- Apoyo / responsable --------------------------- */
+
+.apoyo-panel { text-align: center; }
+.apoyo-emoji { font-size: 46px; line-height: 1; margin-bottom: 6px; }
+.apoyo-panel p { max-width: 60ch; margin: 8px auto; }
+
+.btn-kofi {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 12px 26px;
+  border: 0;
+  border-radius: 999px;
+  background: #ff5e5b;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+.btn-kofi:hover { transform: translateY(-2px); filter: brightness(1.05); }
+
+.inp-label { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); gap: 6px; margin-top: 10px; }
+.inp-label .inp { margin-top: 0; }
+
+.docs-edit { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.doc-edit { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.doc-edit .inp { margin-top: 0; }
+
 @media (max-width: 900px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }

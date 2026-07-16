@@ -273,6 +273,7 @@ export async function handler(req, res) {
         media: b.media, prizeItems: b.prizeItems, theme: b.theme,
         paymentMethods: b.paymentMethods,
         gatewayEnabled: b.gatewayEnabled, manualEnabled: b.manualEnabled,
+        organizer: b.organizer,
       });
       await store.audit({ actor: user.email, action: "CREATE_RAFFLE", entityType: "raffle", entityId: raffle.slug, after: raffle });
       const pub = await maybePublish(store, raffle.slug);

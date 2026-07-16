@@ -14,6 +14,7 @@ import {
 import {
   normalizePaymentMethods, validarComprobante, assertMetodoPermitido, assertFechas,
 } from "./payments.js";
+import { normalizeOrganizer } from "./legal.js";
 
 // Las migraciones viven junto al servicio para que viajen con el despliegue.
 const MIGRATIONS_DIR = new URL("../migrations/", import.meta.url);
@@ -55,6 +56,9 @@ function mapRaffle(r) {
     // Calculado al leer, nunca almacenado: no puede contradecir al desglose.
     prizeTotalCents: prizeTotalCents(prizeItems),
     theme: r.theme || {},
+    // Responsable: SI se publica (transparencia legal); el organizador se
+    // identifica a proposito. Distinto de payment_methods, que es privado.
+    organizer: r.organizer || {},
     // OJO: payment_methods NO va aqui. Esta forma se commitea a un repo publico e
     // inmutable; un numero de cuenta ahi queda para siempre. Los sirve paymentInfo.
   };
@@ -139,15 +143,17 @@ export async function createPostgresStore(
     const prizeItems = normalizePrizeItems(cfg.prizeItems);
     const theme = normalizeTheme(cfg.theme);
     const pagos = normalizePaymentMethods(cfg.paymentMethods);
+    const organizer = normalizeOrganizer(cfg.organizer);
     await tx(async (c) => {
       await c.query(
-        `INSERT INTO raffles (slug,title,description,prize,price_cents,currency,number_min,number_max,starts_at,ends_at,draw_at,min_sold_to_draw,status,media,prize_items,theme,payment_methods,gateway_enabled,manual_enabled)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (slug) DO NOTHING`,
+        `INSERT INTO raffles (slug,title,description,prize,price_cents,currency,number_min,number_max,starts_at,ends_at,draw_at,min_sold_to_draw,status,media,prize_items,theme,payment_methods,gateway_enabled,manual_enabled,organizer)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (slug) DO NOTHING`,
         [cfg.slug, cfg.title, cfg.description || "", cfg.prize, cfg.priceCents, cfg.currency || "COP",
          cfg.numberRange.min, cfg.numberRange.max, cfg.startsAt, cfg.endsAt, cfg.drawAt || null,
          cfg.minSoldToDraw ?? 0, cfg.status || "ACTIVE",
          JSON.stringify(media), JSON.stringify(prizeItems), JSON.stringify(theme),
-         JSON.stringify(pagos), cfg.gatewayEnabled !== false, cfg.manualEnabled !== false]
+         JSON.stringify(pagos), cfg.gatewayEnabled !== false, cfg.manualEnabled !== false,
+         JSON.stringify(organizer)]
       );
       await c.query(
         `INSERT INTO tickets (slug, number) SELECT $1, g FROM generate_series($2::int, $3::int) g
@@ -184,6 +190,7 @@ export async function createPostgresStore(
     const items = patch.prizeItems === undefined ? null : JSON.stringify(normalizePrizeItems(patch.prizeItems));
     const theme = patch.theme === undefined ? null : JSON.stringify(normalizeTheme(patch.theme));
     const pagos = patch.paymentMethods === undefined ? null : JSON.stringify(normalizePaymentMethods(patch.paymentMethods));
+    const organizer = patch.organizer === undefined ? null : JSON.stringify(normalizeOrganizer(patch.organizer));
     await q(
       `UPDATE raffles SET
          title           = COALESCE($2, title),
@@ -197,7 +204,8 @@ export async function createPostgresStore(
          min_sold_to_draw= COALESCE($11::int, min_sold_to_draw),
          payment_methods = COALESCE($12::jsonb, payment_methods),
          gateway_enabled = COALESCE($13::boolean, gateway_enabled),
-         manual_enabled  = COALESCE($14::boolean, manual_enabled)
+         manual_enabled  = COALESCE($14::boolean, manual_enabled),
+         organizer       = COALESCE($15::jsonb, organizer)
        WHERE slug=$1`,
       [
         slug,
@@ -214,6 +222,7 @@ export async function createPostgresStore(
         pagos,
         patch.gatewayEnabled === undefined ? null : Boolean(patch.gatewayEnabled),
         patch.manualEnabled === undefined ? null : Boolean(patch.manualEnabled),
+        organizer,
       ]
     );
     return getRaffle(slug);

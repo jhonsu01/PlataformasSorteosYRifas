@@ -48,6 +48,34 @@ function invoke(cmd, args) {
   return Promise.reject(new Error("Tauri no disponible"));
 }
 
+const KOFI_URL = "https://ko-fi.com/V7V81LV7GX";
+
+// Mismo texto que el README, la web y el APK.
+const DISCLAIMER =
+  "Sorteos y Rifas es software libre, entregado «tal cual», sin garantías. En la mayoría de " +
+  "los países las rifas y sorteos están regulados por la ley. La persona u organización que " +
+  "crea y opera cada sorteo es la única responsable de cumplir la normativa y obtener los " +
+  "permisos de su jurisdicción, de recaudar y administrar los pagos, y de entregar el premio. " +
+  "El autor del software no organiza sorteos ni se responsabiliza del uso que terceros den a " +
+  "esta herramienta ni de la legalidad de los sorteos creados con ella. Este texto no " +
+  "constituye asesoría legal.";
+
+/**
+ * Abre una URL en el navegador del sistema.
+ *
+ * En el webview de Tauri un <a target="_blank"> no siempre abre el navegador
+ * externo; el comando de Rust (open_external) lo hace de forma fiable. Si por
+ * lo que sea Tauri no esta disponible (p. ej. servido como web suelta), cae a
+ * window.open para no dejar el boton muerto.
+ */
+async function abrirExterno(url) {
+  try {
+    await invoke("open_external", { url });
+  } catch {
+    window.open(url, "_blank", "noopener");
+  }
+}
+
 // --------------------------- Sesion ---------------------------
 // El access token vive en memoria (no se persiste). El refresh sí, para no
 // re-pedir la clave en cada arranque; se rota en cada uso.
@@ -409,6 +437,13 @@ VIEWS.rifas = async (el) => {
         <label>Descripción<input name="description" placeholder="Opcional" /></label>
         <label>Cierre de ventas<input name="endsAt" type="datetime-local" required value="${esc(fechaPorDefecto(30))}" /></label>
         <label>Fecha del sorteo<input name="drawAt" type="datetime-local" value="${esc(fechaPorDefecto(30))}" /></label>
+        <label>Responsable de la rifa<input name="orgName" placeholder="Nombre de quien la convoca" /></label>
+        <label>Régimen
+          <select name="orgRegime">
+            <option value="DESCENTRALIZADA">Descentralizada (comunitaria)</option>
+            <option value="REGULADA">Regulada (con permiso oficial)</option>
+          </select>
+        </label>
         <div class="form-actions"><button type="submit" class="btn-approve">Crear rifa</button></div>
       </form>
     </section>`;
@@ -453,6 +488,11 @@ VIEWS.rifas = async (el) => {
       minSoldToDraw: Number(f.minSold.value || 0),
       endsAt: localAIso(f.endsAt.value),
       drawAt: localAIso(f.drawAt.value),
+      // Responsable: el minimo al crear (nombre + regimen). La autorizacion y los
+      // documentos se añaden luego en "Premio y fotos".
+      organizer: f.orgName.value.trim()
+        ? { name: f.orgName.value.trim(), regime: f.orgRegime.value }
+        : undefined,
     };
     try {
       await api("/api/raffles", { method: "POST", body });
@@ -568,6 +608,12 @@ async function abrirEditorPremio(slug) {
       paymentMethods: (pago.paymentMethods || []).map((m) => ({ ...m })),
       gatewayEnabled: pago.gatewayEnabled !== false,
       manualEnabled: pago.manualEnabled !== false,
+      organizer: {
+        name: raffle.organizer?.name || "",
+        regime: raffle.organizer?.regime || "DESCENTRALIZADA",
+        authorization: raffle.organizer?.authorization || "",
+        documents: (raffle.organizer?.documents || []).slice(),
+      },
     };
     pintarEditorPremio();
   } catch (e) {
@@ -614,6 +660,35 @@ function pintarEditorPremio() {
             <input type="number" min="0" class="inp" id="pm-minsold" value="${Number(s.minSoldToDraw) || 0}" />
           </label>
         </div>
+
+        <h3>Responsable de la rifa</h3>
+        <p class="muted small">
+          Quién convoca este sorteo y bajo qué régimen. <b>Se muestra públicamente</b>
+          en la web y en la app del cliente: es la transparencia legal de la rifa.
+        </p>
+        <div class="fechas-grid">
+          <label>Nombre del responsable
+            <input class="inp" id="pm-org-name" placeholder="Quien convoca la rifa" value="${esc(s.organizer.name)}" />
+          </label>
+          <label>Régimen
+            <select class="inp" id="pm-org-regime">
+              <option value="DESCENTRALIZADA" ${s.organizer.regime === "DESCENTRALIZADA" ? "selected" : ""}>Descentralizada (comunitaria)</option>
+              <option value="REGULADA" ${s.organizer.regime === "REGULADA" ? "selected" : ""}>Regulada (con permiso oficial)</option>
+            </select>
+          </label>
+        </div>
+        <label class="inp-label">Autorización / permiso (opcional)
+          <input class="inp" id="pm-org-auth" placeholder="Ej: Permiso N.º ... expedido por ..." value="${esc(s.organizer.authorization)}" />
+        </label>
+        <p class="muted small" style="margin-top:10px">Documentos de legalidad (URLs, opcional)</p>
+        <div class="docs-edit">
+          ${s.organizer.documents.map((d, i) => `
+            <div class="doc-edit">
+              <input class="inp" data-doc="${i}" placeholder="https://..." value="${esc(d)}" />
+              <button class="btn-reject" data-docdel="${i}">Quitar</button>
+            </div>`).join("")}
+        </div>
+        <button class="btn-secondary" id="pm-adddoc">+ Añadir documento</button>
 
         <h3>Cómo se paga</h3>
         <p class="muted small">Si apagas los dos, nadie podrá comprar números.</p>
@@ -744,6 +819,20 @@ function pintarEditorPremio() {
     };
   });
 
+  $("#pm-adddoc").onclick = () => {
+    volcarCampos();
+    s.organizer.documents.push("");
+    pintarEditorPremio();
+  };
+
+  m.querySelectorAll("[data-docdel]").forEach((b) => {
+    b.onclick = () => {
+      volcarCampos();
+      s.organizer.documents.splice(Number(b.dataset.docdel), 1);
+      pintarEditorPremio();
+    };
+  });
+
   m.querySelectorAll("[data-idel]").forEach((b) => {
     b.onclick = () => {
       volcarCampos();
@@ -835,6 +924,10 @@ function volcarCampos() {
   const ms = $("#pm-minsold"); if (ms) s.minSoldToDraw = Number(ms.value || 0);
   const gw = $("#pm-gw"); if (gw) s.gatewayEnabled = gw.checked;
   const mn = $("#pm-mn"); if (mn) s.manualEnabled = mn.checked;
+  const on = $("#pm-org-name"); if (on) s.organizer.name = on.value.trim();
+  const or = $("#pm-org-regime"); if (or) s.organizer.regime = or.value;
+  const oa = $("#pm-org-auth"); if (oa) s.organizer.authorization = oa.value.trim();
+  m.querySelectorAll("[data-doc]").forEach((i) => { s.organizer.documents[Number(i.dataset.doc)] = i.value.trim(); });
 }
 
 async function guardarPremio() {
@@ -876,6 +969,13 @@ async function guardarPremio() {
         paymentMethods: pagos,
         gatewayEnabled: s.gatewayEnabled,
         manualEnabled: s.manualEnabled,
+        organizer: {
+          name: s.organizer.name,
+          regime: s.organizer.regime,
+          authorization: s.organizer.authorization,
+          // Se filtran los vacios: un campo de documento en blanco no es una URL.
+          documents: s.organizer.documents.filter((d) => d.trim()),
+        },
       },
     });
     toast("Guardado y publicado");
@@ -1135,6 +1235,39 @@ VIEWS.config = async (el) => {
       toast(`No se pudo conectar a ${escrito}`, false);
       if (linea) linea.innerHTML = `Estado: <b>sin conexión</b> — revisa la URL y pulsa Guardar si la cambiaste.`;
     }
+  };
+};
+
+// --------------------------- Vista: Apoyo ---------------------------
+VIEWS.apoyo = async (el) => {
+  el.innerHTML = `
+    <header class="topbar"><div><h1>Apoyo</h1><p class="muted">Este proyecto es gratuito y de código abierto</p></div></header>
+    <section class="panel apoyo-panel">
+      <div class="apoyo-emoji">💜</div>
+      <h2>Apoya el desarrollo</h2>
+      <p class="muted">
+        Sorteos y Rifas es <b>software libre</b>. Si te resulta útil, puedes apoyar su
+        desarrollo con una donación. Es totalmente voluntario.
+      </p>
+      <button id="btn-kofi" class="btn-kofi">☕ Apoyar en Ko-fi</button>
+      <p class="muted small" style="margin-top:14px">
+        También puedes dar una ⭐ al repositorio:
+        <a href="#" id="lnk-repo" class="repo-link">github.com/jhonsu01/PlataformasSorteosYRifas</a>
+      </p>
+    </section>
+    <section class="panel">
+      <h2>Descargo de responsabilidad</h2>
+      <p class="muted small">${esc(DISCLAIMER)}</p>
+      <p class="muted small" style="margin-top:10px">
+        Al crear una rifa puedes declarar quién es su responsable en <b>Rifas → Premio y fotos</b>;
+        ese dato se muestra públicamente en la web y en la app del cliente.
+      </p>
+    </section>`;
+
+  $("#btn-kofi").onclick = () => abrirExterno(KOFI_URL);
+  $("#lnk-repo").onclick = (e) => {
+    e.preventDefault();
+    abrirExterno("https://github.com/jhonsu01/PlataformasSorteosYRifas");
   };
 };
 

@@ -126,6 +126,40 @@ La guía técnica completa está en [`docs/Guia.md`](docs/Guia.md).
 
 ---
 
+## ⚖️ Descargo de responsabilidad
+
+**Sorteos y Rifas es software libre, entregado «tal cual», sin garantías de ningún tipo.**
+
+En la mayoría de los países las **rifas y sorteos están regulados por la ley**. La persona u
+organización que crea y opera cada sorteo es la **única responsable** de:
+
+- cumplir la normativa y obtener los **permisos** aplicables en su jurisdicción;
+- **recaudar y administrar los pagos**;
+- **entregar el premio** al ganador.
+
+El autor del software **no organiza sorteos**, no interviene en los pagos ni en la entrega de
+premios, y **no se hace responsable** del uso que terceros den a esta herramienta ni de la
+legalidad de los sorteos creados con ella. Al usar este software aceptas ser el **único
+responsable** de tus sorteos.
+
+> Este texto es informativo y **no constituye asesoría legal**. Consulta la normativa de tu
+> jurisdicción antes de operar un sorteo.
+
+---
+
 ## 📄 Licencia
 
 [MIT](LICENSE) — úsalo, modifícalo y distribúyelo libremente.
+
+---
+
+## 💜 Apoya el proyecto
+
+Este proyecto es **gratuito y de código abierto**. Si te resulta útil, puedes apoyar su
+desarrollo con una donación en Ko-fi:
+
+<div align="center">
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/V7V81LV7GX)
+
+</div>

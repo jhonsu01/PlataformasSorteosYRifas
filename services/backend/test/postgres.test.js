@@ -442,3 +442,29 @@ test("postgres: la base rechaza un sorteo anterior al cierre", { skip }, async (
     );
   } finally { await store.close(); }
 });
+
+// --------------------------- Responsable (v1.8.0) ---------------------------
+test("postgres: el responsable viaja como JSONB y sale en raffle.json", { skip }, async () => {
+  const store = await freshStore();
+  try {
+    await store.createRaffle({
+      ...RAFFLE,
+      organizer: {
+        name: "Comité Barrio X",
+        regime: "REGULADA",
+        authorization: "Resolución 999",
+        documents: ["https://ejemplo.org/permiso.pdf"],
+      },
+    });
+    const pub = await store.publicRaffle("pg-test");
+    assert.equal(pub.organizer.name, "Comité Barrio X");
+    assert.equal(pub.organizer.regime, "REGULADA");
+    assert.deepEqual(pub.organizer.documents, ["https://ejemplo.org/permiso.pdf"]);
+
+    // Editable después sin tocar el resto.
+    await store.updateRaffle("pg-test", { organizer: { name: "Otro responsable" } });
+    const p2 = await store.publicRaffle("pg-test");
+    assert.equal(p2.organizer.name, "Otro responsable");
+    assert.equal(p2.organizer.regime, "DESCENTRALIZADA", "solo el nombre -> régimen por defecto");
+  } finally { await store.close(); }
+});

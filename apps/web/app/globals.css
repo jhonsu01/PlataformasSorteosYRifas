@@ -380,6 +380,24 @@ h1, h2, h3 { line-height: 1.1; margin: 0; letter-spacing: -0.02em; }
 .cd-n { font-size: 1.5rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
 .cd-l { font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mut); margin-top: 4px; }
 
+/* --------------------------- Pie del sitio --------------------------- */
+
+.site-foot {
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 32px 0 40px;
+  margin-top: 40px;
+}
+.foot-legal {
+  font-size: 0.76rem;
+  line-height: 1.6;
+  color: var(--mut);
+  max-width: 90ch;
+  margin: 0 0 14px;
+}
+.foot-meta { font-size: 0.82rem; color: var(--mut); margin: 0; }
+.foot-meta a { color: var(--accent); }
+
 /* Respeta a quien pidio menos animacion en su sistema. */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }
