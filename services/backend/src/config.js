@@ -40,6 +40,7 @@ export const config = {
     login: Number(process.env.RATE_LIMIT_LOGIN ?? 10),      // por IP / 10 min
     webhook: Number(process.env.RATE_LIMIT_WEBHOOK ?? 120), // por IP / 1 min
     receipt: Number(process.env.RATE_LIMIT_RECEIPT ?? 20),  // por IP / 10 min
+    mine: Number(process.env.RATE_LIMIT_MINE ?? 30),        // por IP / 10 min
   },
 
   jwt: {

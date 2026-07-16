@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { httpError, pseudonym, motivoNoDisponible, normalizeCity } from "./store.js";
+import { httpError, pseudonym, motivoNoDisponible, normalizeCity, phoneKey } from "./store.js";
 import {
   normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
 } from "./raffle-media.js";
@@ -390,6 +390,36 @@ export async function createPostgresStore(
     return { held: rows.map((r) => r.number) };
   }
 
+  /**
+   * Compras de un telefono en ESTA rifa (recuperar "Mis numeros").
+   *
+   * PRIVACIDAD: solo numero + estado + lo justo para subir comprobante. Nunca
+   * nombre ni ciudad. Solo PENDING/APPROVED. El telefono se compara por digitos
+   * (regexp_replace quita espacios/guiones/+57), tal como se normaliza el input.
+   */
+  async function purchasesByPhone(slug, phone) {
+    await getRaffle(slug);
+    const clave = phoneKey(phone);
+    if (clave.length < 7) return [];
+    // right(..., 10) = ultimos 10 digitos, para que "+57 300..." case con "300...".
+    const { rows } = await q(
+      `SELECT id, number, status, method, verified_at, receipt_at
+         FROM purchases
+        WHERE slug=$1 AND status IN ('PENDING','APPROVED')
+          AND right(regexp_replace(COALESCE(private->>'phone',''), '\\D', '', 'g'), 10) = $2
+        ORDER BY number`,
+      [slug, clave]
+    );
+    return rows.map((r) => ({
+      purchaseId: r.id,
+      number: r.number,
+      status: r.status,
+      method: r.method,
+      hasReceipt: Boolean(r.receipt_at),
+      verifiedAt: iso(r.verified_at),
+    }));
+  }
+
   /** Bytes del comprobante. Solo para roles autorizados: es dato privado. */
   async function getReceipt(purchaseId) {
     const { rows } = await q(
@@ -733,7 +763,7 @@ export async function createPostgresStore(
   return {
     kind: "postgres",
     createRaffle, getRaffle, updateRaffle, markPublished,
-    reserve, getPurchase, attachReceipt, getReceipt, approve, reject, voidPurchase, markSold,
+    reserve, getPurchase, attachReceipt, getReceipt, purchasesByPhone, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,

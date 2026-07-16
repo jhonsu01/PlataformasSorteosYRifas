@@ -37,6 +37,22 @@ export function normalizeCity(city) {
   return s ? s.slice(0, 60) : null;
 }
 
+/** Telefono a solo digitos, para comparar sin importar espacios/guiones. */
+export function normalizePhone(phone) {
+  return String(phone || "").replace(/\D/g, "");
+}
+
+/**
+ * Clave de comparacion de telefonos: los ultimos 10 digitos.
+ *
+ * Asi coincide un "3001112233" con un "+57 300 111 2233": uno lleva codigo de
+ * pais y el otro no, pero los ultimos 10 son iguales. En Colombia el movil son
+ * 10 digitos, asi que esto no pierde informacion util.
+ */
+export function phoneKey(phone) {
+  return normalizePhone(phone).slice(-10);
+}
+
 /**
  * Por que un numero no esta disponible, en palabras del comprador.
  *
@@ -406,6 +422,35 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
     return { held: held.sort((a, b) => a - b) };
   }
 
+  /**
+   * Compras de un telefono en ESTA rifa. El comprador recupera sus numeros tras
+   * reinstalar la app, o desde la web (donde no hay memoria del dispositivo).
+   *
+   * PRIVACIDAD: devuelve SOLO numero + estado + lo justo para subir un
+   * comprobante (purchaseId, method, hasReceipt). NUNCA el nombre ni la ciudad:
+   * asi, aunque alguien adivine un telefono, no obtiene mas de lo que ya es
+   * publico (los numeros aprobados estan en numbers.json). Solo PENDING y
+   * APPROVED: un REJECTED ya libero el numero.
+   */
+  function purchasesByPhone(slug, phone) {
+    getRaffle(slug);
+    const clave = phoneKey(phone);
+    if (clave.length < 7) return [];
+    return [...purchases.values()]
+      .filter((p) => p.slug === slug
+        && (p.status === "PENDING" || p.status === "APPROVED")
+        && phoneKey(p.private?.phone) === clave)
+      .sort((a, b) => a.number - b.number)
+      .map((p) => ({
+        purchaseId: p.id,
+        number: p.number,
+        status: p.status,
+        method: p.method,
+        hasReceipt: Boolean(p.receiptAt),
+        verifiedAt: p.verifiedAt,
+      }));
+  }
+
   /** Bytes del comprobante. Solo para roles autorizados: es dato privado. */
   function getReceipt(purchaseId) {
     const p = purchases.get(purchaseId);
@@ -584,7 +629,7 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
   return {
     kind: "memory",
     createRaffle, getRaffle, updateRaffle, markPublished,
-    reserve, getPurchase, attachReceipt, getReceipt, approve, reject, voidPurchase, markSold,
+    reserve, getPurchase, attachReceipt, getReceipt, purchasesByPhone, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases,

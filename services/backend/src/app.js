@@ -7,7 +7,7 @@
 // un pool nuevo por request.
 
 import { config, jwtSecretIsEphemeral, wompiEnvValid, safeWompiEnv, isGithubConfigured } from "./config.js";
-import { createStore } from "./store.js";
+import { createStore, normalizePhone } from "./store.js";
 import { createPostgresStore } from "./store-postgres.js";
 import { verifyEventSignature, actionForStatus, integritySignature } from "./wompi.js";
 import { publishPublicState, uploadImage } from "./publisher.js";
@@ -333,6 +333,23 @@ export async function handler(req, res) {
       });
     }
 
+    // POST /api/raffles/:slug/mine -> "Mis numeros" por telefono.
+    //
+    // El telefono va en el CUERPO, nunca en la URL (es dato personal y no debe
+    // quedar en logs ni en el historial del navegador). Rate-limited para frenar
+    // la enumeracion de telefonos. La respuesta es minima (numero + estado): no
+    // se devuelve nombre ni ciudad, asi que adivinar un telefono no da mas de lo
+    // que ya es publico.
+    if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "mine") {
+      await enforceRateLimit(store, req, { ...LIMITS.mine, extra: parts[2] });
+      await store.getRaffle(parts[2]);
+      const b = await readBody(req);
+      if (normalizePhone(b.phone).length < 7) {
+        return json(res, 400, { error: "Escribe tu número de teléfono completo." });
+      }
+      return json(res, 200, { purchases: await store.purchasesByPhone(parts[2], b.phone) });
+    }
+
     if (M === "POST" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "reserve") {
       // Sin esto, un script podria reservar TODOS los numeros de la rifa (cada
       // reserva bloquea el numero RESERVE_MINUTES) sin pagar un peso.
@@ -340,6 +357,12 @@ export async function handler(req, res) {
       const b = await readBody(req);
       if (typeof b.number !== "number" || !b.buyer?.firstName) {
         return json(res, 400, { error: "number y buyer.firstName requeridos" });
+      }
+      // El telefono es OBLIGATORIO: es el unico dato de contacto. Si el ganador
+      // no es localizable, no puede recibir el premio. Se exige aqui ademas de
+      // en los formularios, para que valga aunque llamen a la API a mano.
+      if (normalizePhone(b.buyer?.phone).length < 7) {
+        return json(res, 400, { error: "El teléfono es obligatorio: es la única forma de contactarte si ganas." });
       }
       const p = await store.reserve(parts[2], b.number, b.buyer, b.method || "MANUAL");
       return json(res, 201, {

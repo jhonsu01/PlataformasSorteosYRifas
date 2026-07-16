@@ -452,6 +452,31 @@ h1, h2, h3 { line-height: 1.1; margin: 0; letter-spacing: -0.02em; }
 
 .metodos { display: flex; gap: 8px; margin-top: 12px; }
 
+.aviso-tel {
+  background: rgba(245, 197, 24, 0.12);
+  border: 1px solid var(--gold);
+  color: #ffe08a;
+  border-radius: 10px;
+  padding: 8px 11px;
+  font-size: 0.78rem;
+  margin: 8px 0 0;
+  line-height: 1.5;
+}
+
+.mis-lista { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.mis-item { display: flex; align-items: center; gap: 12px; }
+.mis-num {
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+  text-align: center;
+}
+.mis-num.ok { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+
 .cuenta {
   display: flex;
   justify-content: space-between;

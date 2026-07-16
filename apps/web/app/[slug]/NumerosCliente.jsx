@@ -17,6 +17,7 @@ export default function NumerosCliente({
   const [filtro, setFiltro] = useState(winner ? "GANADOR" : "TODOS");
   const [busqueda, setBusqueda] = useState("");
   const [comprar, setComprar] = useState(null); // número elegido
+  const [verMis, setVerMis] = useState(false);
 
   const numeros = useMemo(() => {
     const q = busqueda.trim();
@@ -39,6 +40,9 @@ export default function NumerosCliente({
   return (
     <>
       <div className="controls">
+        <button type="button" className="btn-ghost" onClick={() => setVerMis(true)}>
+          🎫 Mis números
+        </button>
         <input
           className="buscador"
           inputMode="numeric"
@@ -90,6 +94,10 @@ export default function NumerosCliente({
           backendBase={backendBase} onClose={() => setComprar(null)}
         />
       )}
+
+      {verMis && (
+        <MisNumerosModal slug={slug} max={max} backendBase={backendBase} onClose={() => setVerMis(false)} />
+      )}
     </>
   );
 }
@@ -128,6 +136,124 @@ function comprimir(file) {
     };
     fr.readAsDataURL(file);
   });
+}
+
+// --------------------------- Mis números por teléfono ---------------------------
+
+const estadoTxt = (m) => {
+  if (m.puedeSubir) return "Falta tu comprobante";
+  return {
+    APPROVED: "Pagado ✓ — el número es tuyo",
+    PENDING: "Pago en proceso…",
+  }[m.status] || m.status;
+};
+
+function MisNumerosModal({ slug, max, backendBase, onClose }) {
+  const [phone, setPhone] = useState("");
+  const [paso, setPaso] = useState("form"); // form | cargando | lista
+  const [lista, setLista] = useState([]);
+  const [error, setError] = useState(null);
+  const [subiendoId, setSubiendoId] = useState(null);
+
+  const buscar = async () => {
+    setError(null);
+    setPaso("cargando");
+    try {
+      const res = await fetch(`${backendBase}/api/raffles/${slug}/mine`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phone.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "No se pudo buscar");
+      setLista((data.purchases || []).map((p) => ({
+        ...p, puedeSubir: p.status === "PENDING" && p.method === "MANUAL" && !p.hasReceipt,
+      })));
+      setPaso("lista");
+    } catch (e) {
+      setError(e.message);
+      setPaso("form");
+    }
+  };
+
+  const subir = async (purchaseId, file) => {
+    setSubiendoId(purchaseId);
+    setError(null);
+    try {
+      const base64 = await comprimir(file);
+      const res = await fetch(`${backendBase}/api/purchases/${purchaseId}/receipt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ base64 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "No se pudo enviar el comprobante");
+      // Refresca la lista: la compra ya no pide comprobante.
+      setLista((prev) => prev.map((m) => m.purchaseId === purchaseId ? { ...m, hasReceipt: true, puedeSubir: false } : m));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSubiendoId(null);
+    }
+  };
+
+  const telOk = phone.replace(/\D/g, "").length >= 7;
+
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-top">
+          <h3 style={{ margin: 0 }}>🎫 Mis números</h3>
+          <button className="modal-x" onClick={onClose}>✕</button>
+        </div>
+
+        {error && <p className="err">{error}</p>}
+
+        {(paso === "form" || paso === "cargando") && (
+          <>
+            <p className="mut small">
+              Escribe el teléfono con el que compraste y te mostramos tus números.
+            </p>
+            <input
+              className="inp" placeholder="Tu teléfono" inputMode="tel"
+              value={phone} onChange={(e) => setPhone(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && telOk) buscar(); }}
+            />
+            <button className="btn" disabled={!telOk || paso === "cargando"} onClick={buscar} style={{ marginTop: 12, width: "100%" }}>
+              {paso === "cargando" ? "Buscando…" : "Ver mis números"}
+            </button>
+          </>
+        )}
+
+        {paso === "lista" && (
+          <>
+            {lista.length === 0 ? (
+              <p className="mut">No encontramos números con ese teléfono en este sorteo. Revisa que sea el mismo con el que compraste.</p>
+            ) : (
+              <div className="mis-lista">
+                {lista.map((m) => (
+                  <div className="mis-item" key={m.purchaseId}>
+                    <div className={`mis-num ${m.status === "APPROVED" ? "ok" : ""}`}>{padNum(m.number, max)}</div>
+                    <div style={{ flex: 1 }}>
+                      <div className="small">{estadoTxt(m)}</div>
+                      {m.puedeSubir && (
+                        <label className="btn-ghost small" style={{ marginTop: 6, display: "inline-block", cursor: "pointer" }}>
+                          {subiendoId === m.purchaseId ? "Enviando…" : "Subir comprobante"}
+                          <input type="file" accept="image/*" hidden disabled={subiendoId === m.purchaseId}
+                            onChange={(e) => e.target.files[0] && subir(m.purchaseId, e.target.files[0])} />
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="btn-ghost" onClick={() => setPaso("form")} style={{ marginTop: 12 }}>Buscar con otro teléfono</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
@@ -211,7 +337,9 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
     }
   };
 
-  const puedeReservar = first.trim() && last.trim();
+  // El telefono es obligatorio (>= 7 digitos): es el unico dato de contacto.
+  const telOk = phone.replace(/\D/g, "").length >= 7;
+  const puedeReservar = first.trim() && last.trim() && telOk;
 
   return (
     <div className="modal-back" onClick={onClose}>
@@ -228,7 +356,11 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
             <p className="mut small">{copFormat(priceCents)} · solo se publicará tu nombre, la inicial del apellido y tu ciudad.</p>
             <input className="inp" placeholder="Nombre" value={first} onChange={(e) => setFirst(e.target.value)} />
             <input className="inp" placeholder="Apellido" value={last} onChange={(e) => setLast(e.target.value)} />
-            <input className="inp" placeholder="Teléfono" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            <input className="inp" placeholder="Teléfono (WhatsApp)" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            <p className="aviso-tel">
+              ⚠️ Escribe bien tu teléfono: es la <strong>única forma</strong> de contactarte si ganas.
+              Si está mal, podrías perder el premio.
+            </p>
             <input className="inp" placeholder="Ciudad (opcional)" value={city} onChange={(e) => setCity(e.target.value)} />
 
             {pago && pago.gatewayEnabled && pago.manualEnabled && (

@@ -57,4 +57,8 @@ export const LIMITS = {
   // escribe ~1 MB en la base. Holgado para quien se equivoca de foto y reintenta,
   // pero cerrado a un script que quiera llenar el disco.
   receipt: { name: "receipt", limit: config.rateLimit.receipt, windowSec: 600 },
+  // Buscar "mis numeros" por telefono: frena la enumeracion de telefonos. El
+  // dato que expone por acierto es casi todo publico (numeros aprobados), pero
+  // limitarlo evita que un script barra el espacio de telefonos.
+  mine: { name: "mine", limit: config.rateLimit.mine, windowSec: 600 },
 };

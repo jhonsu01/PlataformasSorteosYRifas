@@ -224,6 +224,11 @@ class MainActivity : ComponentActivity() {
 // ---------------------------------------------------------------------------
 private fun guardarMiCompra(prefs: SharedPreferences, c: MiCompra) {
     val arr = JSONArray(prefs.getString("misCompras", "[]"))
+    // Sin duplicar: al recuperar por telefono se pueden re-guardar compras que
+    // ya estaban. Si el purchaseId ya existe, no se añade otra vez.
+    for (i in 0 until arr.length()) {
+        if (arr.getJSONObject(i).optString("purchaseId") == c.purchaseId) return
+    }
     arr.put(JSONObject().apply {
         put("purchaseId", c.purchaseId); put("slug", c.slug); put("number", c.number)
     })
@@ -828,9 +833,14 @@ private fun MisNumerosDialog(
     onPagar: (Int, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     val mias = remember { leerMisCompras(prefs, slug) }
     var loading by remember { mutableStateOf(true) }
     var estados by remember { mutableStateOf<List<EstadoCompra>>(emptyList()) }
+    // Recuperar por telefono (tras reinstalar la app).
+    var telRecuperar by remember { mutableStateOf("") }
+    var recuperando by remember { mutableStateOf(false) }
+    var msgRecuperar by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         estados = mias.map { c ->
@@ -858,49 +868,90 @@ private fun MisNumerosDialog(
         confirmButton = { TextButton(onDismiss) { Text("Cerrar") } },
         title = { Text("🎫 Mis números") },
         text = {
-            when {
-                loading -> Box(Modifier.fillMaxWidth().padding(20.dp), Alignment.Center) {
-                    CircularProgressIndicator(color = BrandViolet)
-                }
-                mias.isEmpty() -> Text(
-                    "Todavía no has comprado números en este sorteo.\n\n" +
-                        "Toca un número libre para comprarlo.",
-                    fontSize = 14.sp, color = Color.Gray,
-                )
-                else -> Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text(
-                        "Se guardan en este dispositivo. Si desinstalas la app o cambias de " +
-                            "teléfono, esta lista se pierde (tu compra no).",
-                        fontSize = 11.sp, color = Color.Gray,
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                when {
+                    loading -> Box(Modifier.fillMaxWidth().padding(20.dp), Alignment.Center) {
+                        CircularProgressIndicator(color = BrandViolet)
+                    }
+                    ordenados.isEmpty() -> Text(
+                        "Aún no tienes números guardados en este dispositivo.\n\n" +
+                            "Si ya compraste (aquí o en la web), recupéralos con tu teléfono ↓",
+                        fontSize = 14.sp, color = Color.Gray,
                     )
-                    Spacer(Modifier.height(12.dp))
-                    ordenados.forEach { e ->
-                        Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    Modifier.background(colorEstado(e.status), RoundedCornerShape(10.dp))
-                                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                                ) { Text(padNum(e.number, max), color = Color.White, fontWeight = FontWeight.Bold) }
-                                Spacer(Modifier.width(12.dp))
-                                Text(
-                                    if (e.puedeSubirComprobante) "Falta tu comprobante" else textoEstado(e.status),
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                            // El camino de vuelta: si cerro el dialogo de pago y se
-                            // fue a mirar otros numeros, aqui lo recupera. Sin esto
-                            // se quedaba sin forma de mandarlo y al administrador le
-                            // tocaba RECHAZARLE la compra para liberar el numero.
-                            if (e.puedeSubirComprobante) {
-                                Button(
-                                    onClick = { onPagar(e.number, e.purchaseId) },
-                                    modifier = Modifier.padding(start = 56.dp, top = 4.dp),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-                                ) { Text("Ver datos de pago y subir", fontSize = 12.sp) }
+                    else -> {
+                        Text(
+                            "Se guardan en este dispositivo. Si desinstalas la app o cambias de " +
+                                "teléfono, recupéralos con tu teléfono (abajo).",
+                            fontSize = 11.sp, color = Color.Gray,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        ordenados.forEach { e ->
+                            Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        Modifier.background(colorEstado(e.status), RoundedCornerShape(10.dp))
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    ) { Text(padNum(e.number, max), color = Color.White, fontWeight = FontWeight.Bold) }
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        if (e.puedeSubirComprobante) "Falta tu comprobante" else textoEstado(e.status),
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                // El camino de vuelta: si cerro el dialogo de pago y se
+                                // fue a mirar otros numeros, aqui lo recupera.
+                                if (e.puedeSubirComprobante) {
+                                    Button(
+                                        onClick = { onPagar(e.number, e.purchaseId) },
+                                        modifier = Modifier.padding(start = 56.dp, top = 4.dp),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                                    ) { Text("Ver datos de pago y subir", fontSize = 12.sp) }
+                                }
                             }
                         }
                     }
+                }
+
+                // Recuperar por telefono: SIEMPRE disponible. Es la unica forma de
+                // ver tus numeros tras reinstalar la app (se borra la memoria local)
+                // o desde otro telefono.
+                Spacer(Modifier.height(16.dp))
+                Text("¿Reinstalaste la app o cambiaste de teléfono?", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                Text(
+                    "Escribe el teléfono con el que compraste y recuperamos tus números.",
+                    fontSize = 11.sp, color = Color.Gray,
+                )
+                OutlinedTextField(
+                    telRecuperar, { telRecuperar = it },
+                    label = { Text("Tu teléfono") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Button(
+                    enabled = !recuperando && telRecuperar.filter { it.isDigit() }.length >= 7,
+                    onClick = {
+                        recuperando = true
+                        msgRecuperar = null
+                        scope.launch {
+                            try {
+                                val list = fetchMinePorTelefono(backendBase, slug, telRecuperar.trim())
+                                list.forEach { guardarMiCompra(prefs, MiCompra(it.purchaseId, slug, it.number)) }
+                                estados = (estados + list).distinctBy { it.purchaseId }
+                                msgRecuperar = if (list.isEmpty())
+                                    "No encontramos números con ese teléfono en este sorteo."
+                                else "Recuperamos ${list.size} número(s)."
+                            } catch (e: Exception) {
+                                msgRecuperar = e.message ?: "No se pudo recuperar."
+                            } finally {
+                                recuperando = false
+                            }
+                        }
+                    },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) { Text(if (recuperando) "Buscando…" else "Recuperar mis números") }
+                msgRecuperar?.let {
+                    Text(it, fontSize = 12.sp, color = BrandViolet, modifier = Modifier.padding(top = 6.dp))
                 }
             }
         },
@@ -1016,7 +1067,16 @@ private fun PurchaseDialog(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(last, { last = it }, label = { Text("Apellido") }, singleLine = true)
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(phone, { phone = it }, label = { Text("Teléfono") }, singleLine = true)
+                OutlinedTextField(
+                    phone, { phone = it }, label = { Text("Teléfono (WhatsApp)") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                )
+                Text(
+                    "⚠️ Escribe bien tu teléfono: es la única forma de contactarte si ganas. " +
+                        "Si está mal, podrías perder el premio.",
+                    fontSize = 11.sp, color = Color(0xFF92400E),
+                    modifier = Modifier.background(Color(0xFFFEF3C7), RoundedCornerShape(8.dp)).padding(8.dp),
+                )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(city, { city = it }, label = { Text("Ciudad (opcional)") }, singleLine = true)
 
@@ -1043,7 +1103,9 @@ private fun PurchaseDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = first.isNotBlank() && last.isNotBlank(),
+                // El telefono es obligatorio (>= 7 digitos): es el unico contacto.
+                enabled = first.isNotBlank() && last.isNotBlank() &&
+                    phone.filter { it.isDigit() }.length >= 7,
                 onClick = { onConfirm(first.trim(), last.trim(), phone.trim(), city.trim(), metodo) },
             ) { Text(if (metodo == "MANUAL") "Ver datos de pago" else "Ir a pagar") }
         },
@@ -1266,6 +1328,28 @@ private suspend fun fetchRaffles(backendBase: String): List<RaffleSummary> {
  * No salen de numbers.json (ese es el estado publicado y una reserva dura
  * minutos): los sirve el backend. Solo numeros, sin identidad.
  */
+/**
+ * Recupera las compras de un telefono en esta rifa (tras reinstalar la app se
+ * pierde la memoria del dispositivo). El telefono va en el CUERPO, no en la URL.
+ */
+private suspend fun fetchMinePorTelefono(backendBase: String, slug: String, phone: String): List<EstadoCompra> {
+    val body = JSONObject().apply { put("phone", phone) }
+    val arr = JSONObject(httpPost("$backendBase/api/raffles/$slug/mine", body.toString()))
+        .getJSONArray("purchases")
+    return buildList {
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            add(EstadoCompra(
+                purchaseId = o.getString("purchaseId"),
+                number = o.getInt("number"),
+                status = o.getString("status"),
+                method = o.optString("method", ""),
+                hasReceipt = o.optBoolean("hasReceipt", false),
+            ))
+        }
+    }
+}
+
 private suspend fun fetchHeld(backendBase: String, slug: String): Set<Int> {
     val arr = JSONObject(httpGet("$backendBase/api/raffles/$slug/held")).getJSONArray("held")
     return buildSet { for (i in 0 until arr.length()) add(arr.getInt(i)) }
