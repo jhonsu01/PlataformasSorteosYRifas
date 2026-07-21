@@ -55,7 +55,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -173,7 +175,26 @@ data class EstadoCompra(
 data class Checkout(
     val purchaseId: String, val reference: String, val amountInCents: Long,
     val publicKey: String, val integritySignature: String,
+    // Orden de varios numeros con UN solo pago. Para una compra de 1 numero,
+    // orderRef = reference y las listas tienen un solo elemento.
+    val orderRef: String = reference,
+    val numbers: List<Int> = emptyList(),
+    val purchaseIds: List<String> = emptyList(),
 )
+
+/**
+ * Datos para el dialogo de pago manual. Puede venir de una compra NUEVA (con
+ * orderRef -> el comprobante cubre toda la orden) o de retomar una compra que ya
+ * existe desde "Mis numeros" (con purchaseId suelto -> comprobante de ese numero).
+ */
+data class ManualPago(
+    val etiqueta: String,
+    val count: Int,
+    val orderRef: String? = null,
+    val purchaseId: String? = null,
+)
+
+private const val MAX_NUMEROS_COMPRA = 10
 
 private val BrandViolet = Color(0xFF7C3AED)
 private val BrandPink = Color(0xFFDB2777)
@@ -407,12 +428,14 @@ private fun RaffleScreen(
     var winner by remember { mutableStateOf<DrawWinner?>(null) }
     var reload by remember { mutableStateOf(0) }
 
-    var buyNumber by remember { mutableStateOf<Int?>(null) }
+    // Numeros seleccionados para comprar juntos (hasta 10, un solo pago).
+    val seleccionados = remember { mutableStateListOf<Int>() }
+    var buyNumbers by remember { mutableStateOf<List<Int>?>(null) }
     var checkout by remember { mutableStateOf<Checkout?>(null) }
     var busyMsg by remember { mutableStateOf<String?>(null) }
     var showMisNumeros by remember { mutableStateOf(false) }
-    // Pago manual en curso: numero + compra ya reservada, esperando comprobante.
-    var manual by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    // Pago manual en curso: la orden (o un numero) ya reservada, esperando comprobante.
+    var manual by remember { mutableStateOf<ManualPago?>(null) }
     var subiendo by remember { mutableStateOf(false) }
     var pago by remember { mutableStateOf(PaymentInfo(true, true, emptyList())) }
     // Numeros apartados por otros AHORA MISMO. No estan en numbers.json (eso es
@@ -459,41 +482,51 @@ private fun RaffleScreen(
             }
             raffle != null -> Content(
                 raffle = raffle!!, sold = sold, winner = winner, apartados = apartados,
+                seleccionados = seleccionados,
                 onCambiarRifa = onCambiarRifa,
                 onMisNumeros = { showMisNumeros = true },
-                onPickNumber = { n ->
+                onToggleNumber = { n ->
                     when {
                         raffle!!.status != "ACTIVE" -> busyMsg = "El sorteo no está activo."
-                        // Se avisa ANTES de intentar reservar. El backend lo
-                        // rechazaria igual, pero el comprador merece saberlo sin
-                        // tener que llenar el formulario para nada.
+                        n in seleccionados -> seleccionados.remove(n)
+                        // Se avisa ANTES de reservar. El backend lo rechazaria igual,
+                        // pero el comprador merece saberlo sin llenar el formulario.
                         n in apartados -> busyMsg =
                             "El número ${padNum(n, raffle!!.max)} está apartado por otra persona " +
                                 "o esperando que se verifique un pago. Si no se completa volverá " +
                                 "a quedar libre; mientras tanto, elige otro."
-                        else -> buyNumber = n
+                        seleccionados.size >= MAX_NUMEROS_COMPRA ->
+                            busyMsg = "Puedes comprar hasta $MAX_NUMEROS_COMPRA números en una compra."
+                        else -> seleccionados.add(n)
                     }
                 },
+                onComprar = { buyNumbers = seleccionados.sorted() },
             )
         }
 
-        buyNumber?.let { n ->
+        buyNumbers?.let { nums ->
+            val etiquetas = nums.joinToString(", ") { padNum(it, raffle!!.max) }
             PurchaseDialog(
-                etiqueta = padNum(n, raffle!!.max), priceCents = raffle!!.priceCents,
+                etiquetas = etiquetas, count = nums.size,
+                totalCents = raffle!!.priceCents * nums.size,
                 pago = pago,
-                onDismiss = { buyNumber = null },
+                onDismiss = { buyNumbers = null },
                 onConfirm = { first, last, phone, city, metodo ->
-                    buyNumber = null
-                    busyMsg = "Reservando número ${padNum(n, raffle!!.max)}…"
+                    buyNumbers = null
+                    busyMsg = if (nums.size == 1) "Reservando número $etiquetas…"
+                        else "Reservando ${nums.size} números…"
                     scope.launch {
                         try {
-                            val c = reserve(backendBase, slug, n, first, last, phone, city, metodo)
-                            // Se guarda ANTES de pagar: si el pago queda pendiente,
-                            // el comprador igual puede seguirlo en "Mis números".
-                            guardarMiCompra(prefs, MiCompra(c.purchaseId, slug, n))
+                            val c = reserve(backendBase, slug, nums, first, last, phone, city, metodo)
+                            // Se guarda cada numero ANTES de pagar: si el pago queda
+                            // pendiente, el comprador igual lo sigue en "Mis números".
+                            c.purchaseIds.forEachIndexed { i, pid ->
+                                guardarMiCompra(prefs, MiCompra(pid, slug, c.numbers.getOrElse(i) { nums[i] }))
+                            }
+                            seleccionados.clear()
                             busyMsg = null
                             if (metodo == "MANUAL") {
-                                manual = n to c.purchaseId
+                                manual = ManualPago(etiquetas, c.numbers.size, orderRef = c.orderRef)
                             } else if (c.publicKey.isBlank()) {
                                 busyMsg = "El sorteo no tiene pagos configurados todavía."
                             } else checkout = c
@@ -505,26 +538,33 @@ private fun RaffleScreen(
             )
         }
 
-        manual?.let { (n, purchaseId) ->
+        manual?.let { mp ->
             val ctx = LocalContext.current
             ManualPaymentDialog(
-                etiqueta = padNum(n, raffle!!.max),
+                etiqueta = mp.etiqueta,
+                count = mp.count,
                 priceCents = raffle!!.priceCents,
                 metodos = pago.methods,
                 subiendo = subiendo,
                 onDismiss = {
                     manual = null
-                    // No se pierde: el numero sigue reservado y la compra quedo en
-                    // "Mis números", asi que puede volver y subirlo mas tarde.
-                    busyMsg = "Tu número ${padNum(n, raffle!!.max)} sigue apartado. " +
-                        "Puedes subir el comprobante desde \"Mis números\"."
+                    // No se pierde: los numeros siguen reservados y la compra quedo
+                    // en "Mis números", asi que puede volver y subir el comprobante.
+                    busyMsg = if (mp.count > 1)
+                        "Tus números ${mp.etiqueta} siguen apartados. Puedes subir el comprobante desde \"Mis números\"."
+                    else
+                        "Tu número ${mp.etiqueta} sigue apartado. Puedes subir el comprobante desde \"Mis números\"."
                 },
                 onSubirComprobante = { uri ->
                     subiendo = true
                     scope.launch {
                         try {
                             val bytes = withContext(Dispatchers.IO) { comprimirComprobante(ctx, uri) }
-                            val msg = uploadReceipt(backendBase, purchaseId, bytes)
+                            // Un comprobante para toda la orden (nuevo) o para el
+                            // numero suelto (al retomar desde "Mis números").
+                            val msg = if (mp.orderRef != null)
+                                uploadOrderReceipt(backendBase, mp.orderRef, bytes)
+                            else uploadReceipt(backendBase, mp.purchaseId!!, bytes)
                             manual = null
                             busyMsg = msg
                             reload++
@@ -563,9 +603,10 @@ private fun RaffleScreen(
             max = raffle?.max ?: 999,
             onPagar = { n, purchaseId ->
                 // Reabre la pantalla de pago de una compra que YA existe: no se
-                // reserva de nuevo (el numero ya es suyo), solo se retoma.
+                // reserva de nuevo (el numero ya es suyo), solo se retoma. Es un
+                // numero suelto, asi que el comprobante va por purchaseId.
                 showMisNumeros = false
-                manual = n to purchaseId
+                manual = ManualPago(padNum(n, raffle?.max ?: 999), 1, purchaseId = purchaseId)
             },
             onDismiss = { showMisNumeros = false },
         )
@@ -583,7 +624,9 @@ private fun RaffleScreen(
 @Composable
 private fun Content(
     raffle: Raffle, sold: List<Sold>, winner: DrawWinner?, apartados: Set<Int>,
-    onCambiarRifa: () -> Unit, onMisNumeros: () -> Unit, onPickNumber: (Int) -> Unit,
+    seleccionados: List<Int>,
+    onCambiarRifa: () -> Unit, onMisNumeros: () -> Unit,
+    onToggleNumber: (Int) -> Unit, onComprar: () -> Unit,
 ) {
     val soldByNumber = remember(sold) { sold.associateBy { it.number } }
     val total = (raffle.max - raffle.min + 1).coerceAtLeast(0)
@@ -624,12 +667,12 @@ private fun Content(
             contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 16.dp + navBottom),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
         ) {
             gridItems(numeros) { n ->
                 val s = soldByNumber[n]
-                NumberCell(padNum(n, raffle.max), s, winner?.number == n, n in apartados) {
-                    if (s == null) onPickNumber(n)
+                NumberCell(padNum(n, raffle.max), s, winner?.number == n, n in apartados, n in seleccionados) {
+                    if (s == null) onToggleNumber(n)
                 }
             }
             if (numeros.isEmpty()) {
@@ -645,6 +688,25 @@ private fun Content(
             // Pie a lo ancho de toda la rejilla: responsable + descargo legal.
             item(span = { GridItemSpan(maxLineSpan) }) {
                 RaffleFooter(raffle.organizer)
+            }
+        }
+
+        // Barra de compra: aparece cuando hay numeros elegidos. Un solo pago por todos.
+        if (seleccionados.isNotEmpty()) {
+            Surface(shadowElevation = 12.dp, color = Color.White) {
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp, 12.dp, 16.dp, 12.dp + navBottom),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "${seleccionados.size} número${if (seleccionados.size > 1) "s" else ""}",
+                            fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                        )
+                        Text(formatCop(raffle.priceCents * seleccionados.size), color = BrandViolet, fontWeight = FontWeight.Bold)
+                    }
+                    Button(onClick = onComprar) { Text("Comprar") }
+                }
             }
         }
     }
@@ -997,21 +1059,24 @@ private fun WinnerBanner(winner: DrawWinner, max: Int) {
 
 @Composable
 private fun NumberCell(
-    etiqueta: String, sold: Sold?, isWinner: Boolean, apartado: Boolean, onClick: () -> Unit,
+    etiqueta: String, sold: Sold?, isWinner: Boolean, apartado: Boolean,
+    selected: Boolean, onClick: () -> Unit,
 ) {
     val bg = when {
         isWinner -> Gold
         sold != null -> BrandViolet
+        selected -> BrandViolet         // elegido para comprar: se ve lleno
         // Apartado: se ve tomado pero se deja tocar, para poder explicar por que
         // no esta disponible. Un numero muerto que no responde no ensena nada.
         apartado -> Apartado
         else -> FreeGray
     }
-    val fg = if (sold != null || isWinner) Color.White else Color(0xFF6B7280)
+    val fg = if (sold != null || isWinner || selected) Color.White else Color(0xFF6B7280)
     Card(
         modifier = Modifier.aspectRatio(1f).clickable(enabled = sold == null) { onClick() },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = bg),
+        border = if (selected) BorderStroke(2.dp, BrandPink) else null,
     ) {
         Column(
             Modifier.fillMaxSize().padding(4.dp),
@@ -1020,6 +1085,7 @@ private fun NumberCell(
         ) {
             Text(etiqueta, color = fg, fontWeight = FontWeight.Bold, fontSize = 15.sp)
             when {
+                selected -> Text("✓", color = Color.White, fontSize = 9.sp)
                 sold != null -> Text(
                     sold.buyer, color = fg.copy(alpha = 0.9f), fontSize = 8.sp,
                     maxLines = 1, textAlign = TextAlign.Center,
@@ -1036,7 +1102,7 @@ private fun NumberCell(
 
 @Composable
 private fun PurchaseDialog(
-    etiqueta: String, priceCents: Long,
+    etiquetas: String, count: Int, totalCents: Long,
     pago: PaymentInfo,
     onDismiss: () -> Unit,
     onConfirm: (String, String, String, String, String) -> Unit,
@@ -1053,10 +1119,17 @@ private fun PurchaseDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Comprar número $etiqueta") },
+        title = { Text(if (count == 1) "Comprar número $etiquetas" else "Comprar $count números") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("Precio: ${formatCop(priceCents)}", fontWeight = FontWeight.Medium)
+                if (count > 1) {
+                    Text("Números: $etiquetas", fontSize = 12.sp, color = Color.Gray)
+                    Spacer(Modifier.height(4.dp))
+                }
+                Text(
+                    "Total: ${formatCop(totalCents)}" + if (count > 1) " · un solo pago" else "",
+                    fontWeight = FontWeight.Medium,
+                )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "Solo se publicará tu nombre, la inicial del apellido y tu ciudad.",
@@ -1147,12 +1220,14 @@ private fun MetodoChip(texto: String, activo: Boolean, onClick: () -> Unit) {
 @Composable
 private fun ManualPaymentDialog(
     etiqueta: String,
+    count: Int,
     priceCents: Long,
     metodos: List<PaymentMethod>,
     onSubirComprobante: (android.net.Uri) -> Unit,
     onDismiss: () -> Unit,
     subiendo: Boolean,
 ) {
+    val totalCents = priceCents * count
     val portapapeles = LocalClipboardManager.current
     var copiado by remember { mutableStateOf<String?>(null) }
 
@@ -1164,11 +1239,16 @@ private fun ManualPaymentDialog(
 
     AlertDialog(
         onDismissRequest = { if (!subiendo) onDismiss() },
-        title = { Text("Paga el número $etiqueta") },
+        title = { Text(if (count > 1) "Paga $count números" else "Paga el número $etiqueta") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (count > 1) {
+                    Text("Números: $etiqueta", fontSize = 12.sp, color = Color.Gray)
+                    Spacer(Modifier.height(6.dp))
+                }
                 Text(
-                    "Transfiere ${formatCop(priceCents)} a cualquiera de estas cuentas:",
+                    "Transfiere ${formatCop(totalCents)} a cualquiera de estas cuentas" +
+                        if (count > 1) " (un solo pago por los $count números):" else ":",
                     fontSize = 14.sp,
                 )
                 Spacer(Modifier.height(12.dp))
@@ -1201,8 +1281,10 @@ private fun ManualPaymentDialog(
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Tu número ${etiqueta} ya está apartado. Sube el comprobante y " +
-                        "queda reservado hasta que lo verifiquemos.",
+                    if (count > 1)
+                        "Tus $count números ya están apartados. Sube UN comprobante y quedan reservados hasta que lo verifiquemos."
+                    else
+                        "Tu número $etiqueta ya está apartado. Sube el comprobante y queda reservado hasta que lo verifiquemos.",
                     fontSize = 12.sp, color = Color.Gray,
                 )
             }
@@ -1423,12 +1505,14 @@ private fun wompiCheckoutUrl(c: Checkout): String {
 }
 
 private suspend fun reserve(
-    backendBase: String, slug: String, number: Int,
+    backendBase: String, slug: String, numbers: List<Int>,
     first: String, last: String, phone: String, city: String,
     method: String = "WOMPI",
 ): Checkout {
+    // Siempre se manda `numbers` (aunque sea uno): el backend crea una orden y
+    // devuelve las listas + el total, tanto para 1 numero como para varios.
     val body = JSONObject().apply {
-        put("number", number)
+        put("numbers", org.json.JSONArray(numbers))
         put("method", method)
         put("buyer", JSONObject().apply {
             put("firstName", first); put("lastName", last); put("phone", phone)
@@ -1437,13 +1521,29 @@ private suspend fun reserve(
         })
     }
     val res = JSONObject(httpPost("$backendBase/api/raffles/$slug/reserve", body.toString()))
+    val ids = res.optJSONArray("purchaseIds")
+    val nums = res.optJSONArray("numbers")
+    val purchaseIds = (0 until (ids?.length() ?: 0)).map { ids!!.getString(it) }
+    val numeros = (0 until (nums?.length() ?: 0)).map { nums!!.getInt(it) }
+    val reference = res.getString("reference") // = orderRef
     return Checkout(
-        purchaseId = res.getString("purchaseId"),
-        reference = res.getString("reference"),
+        purchaseId = purchaseIds.firstOrNull() ?: res.optString("purchaseId", ""),
+        reference = reference,
         amountInCents = res.getLong("amountInCents"),
         publicKey = res.optString("publicKey", ""),
         integritySignature = res.optString("integritySignature", ""),
+        orderRef = res.optString("orderRef", reference),
+        numbers = numeros,
+        purchaseIds = purchaseIds,
     )
+}
+
+/** Sube UN comprobante para toda la orden (varios numeros, un solo pago). */
+private suspend fun uploadOrderReceipt(backendBase: String, orderRef: String, bytes: ByteArray): String {
+    val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+    val body = JSONObject().apply { put("base64", b64); put("mime", "image/jpeg") }
+    val r = JSONObject(httpPost("$backendBase/api/orders/$orderRef/receipt", body.toString(), 30_000))
+    return r.optString("mensaje", "Comprobante enviado")
 }
 
 private suspend fun pollPurchase(backendBase: String, purchaseId: String, attempts: Int = 8): String {
