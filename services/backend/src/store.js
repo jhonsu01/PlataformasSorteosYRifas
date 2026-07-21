@@ -15,6 +15,10 @@ import { normalizeOrganizer } from "./legal.js";
 // Se re-exporta para no romper a quien ya lo importaba desde aqui.
 export { httpError };
 
+// Tope de numeros por compra (una sola orden, un solo pago). Fijo a proposito:
+// mas de 10 empieza a parecer acaparamiento y complica el pago unico.
+export const MAX_NUMBERS_PER_ORDER = 10;
+
 function cap(s) {
   const v = String(s || "").trim();
   return v ? v[0].toUpperCase() + v.slice(1).toLowerCase() : v;
@@ -132,7 +136,11 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
 
   // Reserva ATOMICA: solo pasa de FREE -> RESERVED. Como Node ejecuta el event
   // loop de forma sincronica, el check-and-set no tiene condicion de carrera.
-  function reserve(slug, number, buyer, method = "MANUAL") {
+  //
+  // `orderRef`: agrupa varias filas de una misma compra (varios numeros, un solo
+  // pago). Si no se pasa, la compra es su propia orden (order_ref = reference),
+  // que es el caso de una compra de un solo numero.
+  function reserve(slug, number, buyer, method = "MANUAL", orderRef = null) {
     const raffle = getRaffle(slug);
     // Se valida en el servidor, no solo escondiendo el boton en la app.
     assertMetodoPermitido(raffle, method);
@@ -155,6 +163,7 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
 
     const id = crypto.randomUUID();
     const reference = `RAFFLE-${slug}-NUM-${number}-${id}`;
+    const oref = orderRef || reference;
     t.status = "RESERVED";
     // El pago manual necesita mas tiempo: hay que abrir Nequi, pagar, tomar el
     // pantallazo y volver. Con la ventana de la pasarela (inmediata) se le
@@ -166,6 +175,7 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       id, slug, number, method,
       status: "PENDING",
       reference,
+      orderRef: oref,
       amountCents: raffle.priceCents,
       buyerPublic: pseudonym(buyer.firstName, buyer.lastName),
       // Ciudad: PUBLICA (el usuario acepto que se muestre). Grueso, no direccion.
@@ -192,6 +202,90 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
     purchases.set(id, purchase);
     byReference.set(reference, id);
     return purchase;
+  }
+
+  /**
+   * Reserva VARIOS numeros (hasta MAX_NUMBERS_PER_ORDER) en UNA sola orden, con
+   * un unico pago. Es todo-o-nada: si algun numero no esta libre, no se reserva
+   * ninguno (se valida TODO antes de tocar nada; como el store es sincrono, no
+   * hay condicion de carrera entre la validacion y la reserva).
+   */
+  function reserveMany(slug, numbers, buyer, method = "MANUAL") {
+    const raffle = getRaffle(slug);
+    assertMetodoPermitido(raffle, method);
+
+    if (!Array.isArray(numbers) || numbers.length === 0) {
+      throw httpError(400, "Debes elegir al menos un numero");
+    }
+    const unicos = [...new Set(numbers)];
+    if (unicos.length !== numbers.length) throw httpError(400, "Hay numeros repetidos");
+    if (unicos.length > MAX_NUMBERS_PER_ORDER) {
+      throw httpError(400, `Maximo ${MAX_NUMBERS_PER_ORDER} numeros por compra`);
+    }
+    for (const n of unicos) {
+      if (typeof n !== "number" || !Number.isInteger(n)) throw httpError(400, "Numero invalido");
+    }
+
+    // Fase 1: validar que TODOS esten libres (liberando reservas vencidas sin
+    // comprobante). No se muta ningun ticket todavia.
+    for (const n of unicos) {
+      const t = tickets.get(key(slug, n));
+      if (!t) throw httpError(404, `Numero ${n} fuera de rango`);
+      if (t.status === "RESERVED" && t.reservedUntil && t.reservedUntil < Date.now()) {
+        const previa = t.purchaseId && purchases.get(t.purchaseId);
+        if (!previa?.receiptAt) releaseTicket(t);
+      }
+      if (t.status !== "FREE") {
+        const ocupante = t.purchaseId && purchases.get(t.purchaseId);
+        throw httpError(409, `Numero ${n}: ${motivoNoDisponible(t, ocupante)}`);
+      }
+    }
+
+    // Fase 2: reservar todos bajo un mismo order_ref.
+    const orderRef = `ORD-${slug}-${crypto.randomUUID()}`;
+    const creadas = unicos.map((n) => reserve(slug, n, buyer, method, orderRef));
+    return {
+      orderRef,
+      count: creadas.length,
+      totalCents: raffle.priceCents * creadas.length,
+      currency: raffle.currency || "COP",
+      purchases: creadas,
+    };
+  }
+
+  /** Todas las filas (numeros) de una orden. */
+  function findByOrderRef(orderRef) {
+    return [...purchases.values()].filter((p) => p.orderRef === orderRef);
+  }
+
+  /** Aprueba TODA una orden (un solo pago -> se venden todos sus numeros). */
+  function approveOrder(orderRef, approver = {}) {
+    const filas = findByOrderRef(orderRef);
+    if (!filas.length) throw httpError(404, "Orden no encontrada");
+    return filas.map((p) => markSold(p, {
+      approvedBy: approver.approvedBy || "admin",
+      approverId: approver.approverId || null,
+      approverName: approver.approverName || null,
+      approverRole: approver.approverRole || null,
+      wompiTransactionId: approver.wompiTransactionId || null,
+    }));
+  }
+
+  /** Rechaza TODA una orden (libera todos sus numeros). */
+  function rejectOrder(orderRef, { reason = "" } = {}) {
+    const filas = findByOrderRef(orderRef);
+    if (!filas.length) throw httpError(404, "Orden no encontrada");
+    return filas.map((p) => rejectOne(p, reason));
+  }
+
+  /** Adjunta el MISMO comprobante a todos los numeros de la orden. */
+  function attachReceiptToOrder(orderRef, { bytes, mime } = {}) {
+    const filas = findByOrderRef(orderRef).filter((p) => p.status === "PENDING");
+    if (!filas.length) throw httpError(404, "Orden sin numeros pendientes");
+    const real = validarComprobante(bytes);
+    const at = new Date().toISOString();
+    for (const p of filas) { p.receipt = { bytes, mime: real || mime }; p.receiptAt = at; }
+    return filas;
   }
 
   function releaseTicket(t) {
@@ -224,21 +318,31 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
     return p;
   }
 
-  // Aprueba (equivalente a APPROVED de Wompi): numero -> SOLD, fija verifiedAt.
+  // Aprueba una compra. Como una compra puede tener varios numeros (una orden con
+  // un solo pago), aprobar cae sobre TODA la orden: se venden todos sus numeros.
+  // Para una compra de un numero, la orden es de tamaño 1 (comportamiento igual).
   function approve(purchaseId, { approvedBy = "admin", approverId = null, approverName = null, approverRole = null } = {}) {
     const p = purchases.get(purchaseId);
     if (!p) throw httpError(404, "Compra no encontrada");
-    return markSold(p, { approvedBy, approverId, approverName, approverRole });
+    approveOrder(p.orderRef, { approvedBy, approverId, approverName, approverRole });
+    return purchases.get(purchaseId);
   }
 
-  function reject(purchaseId, { reason = "" } = {}) {
-    const p = purchases.get(purchaseId);
-    if (!p) throw httpError(404, "Compra no encontrada");
+  function rejectOne(p, reason) {
     p.status = "REJECTED";
     p.note = reason;
     const t = tickets.get(key(p.slug, p.number));
     if (t && t.purchaseId === p.id) releaseTicket(t);
     return p;
+  }
+
+  // Rechazar tambien cae sobre toda la orden (un solo pago rechazado libera todos
+  // sus numeros).
+  function reject(purchaseId, { reason = "" } = {}) {
+    const p = purchases.get(purchaseId);
+    if (!p) throw httpError(404, "Compra no encontrada");
+    rejectOrder(p.orderRef, { reason });
+    return purchases.get(purchaseId);
   }
 
   /**
@@ -371,6 +475,8 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
         approvedByName: p.approvedByName || null,
         approvedByRole: p.approvedByRole || null,
         approvedById: p.approvedById || null,
+        // Orden a la que pertenece (varios numeros, un solo pago).
+        orderRef: p.orderRef || p.reference,
       }));
   }
 
@@ -722,7 +828,8 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
   return {
     kind: "memory",
     createRaffle, getRaffle, updateRaffle, markPublished,
-    reserve, getPurchase, attachReceipt, getReceipt, purchasesByPhone, approve, reject, voidPurchase, markSold,
+    reserve, reserveMany, getPurchase, attachReceipt, attachReceiptToOrder, getReceipt, purchasesByPhone,
+    approve, reject, voidPurchase, markSold, approveOrder, rejectOrder, findByOrderRef,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases, confirmationsBySeller,

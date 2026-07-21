@@ -474,19 +474,44 @@ export async function handler(req, res) {
       // reserva bloquea el numero RESERVE_MINUTES) sin pagar un peso.
       await enforceRateLimit(store, req, { ...LIMITS.reserve, extra: parts[2] });
       const b = await readBody(req);
-      if (typeof b.number !== "number" || !b.buyer?.firstName) {
-        return json(res, 400, { error: "number y buyer.firstName requeridos" });
-      }
+      const method = b.method || "MANUAL";
+      if (!b.buyer?.firstName) return json(res, 400, { error: "buyer.firstName requerido" });
       // El telefono es OBLIGATORIO: es el unico dato de contacto. Si el ganador
       // no es localizable, no puede recibir el premio. Se exige aqui ademas de
       // en los formularios, para que valga aunque llamen a la API a mano.
       if (normalizePhone(b.buyer?.phone).length < 7) {
         return json(res, 400, { error: "El teléfono es obligatorio: es la única forma de contactarte si ganas." });
       }
-      const p = await store.reserve(parts[2], b.number, b.buyer, b.method || "MANUAL");
+
+      // Compra de VARIOS numeros (hasta 10) con UN solo pago: b.numbers = [12, 34, ...].
+      if (Array.isArray(b.numbers)) {
+        const order = await store.reserveMany(parts[2], b.numbers, b.buyer, method);
+        const amount = String(order.totalCents);
+        return json(res, 201, {
+          orderRef: order.orderRef,
+          // El pago es UNO por el total; la referencia Wompi es la de la orden.
+          reference: order.orderRef,
+          amountInCents: order.totalCents,
+          currency: order.currency,
+          count: order.count,
+          numbers: order.purchases.map((p) => p.number),
+          purchaseIds: order.purchases.map((p) => p.id),
+          publicKey: config.wompi.publicKey,
+          integritySignature: integritySignature(order.orderRef, amount, order.currency, config.wompi.integrityKey),
+          status: "PENDING",
+        });
+      }
+
+      // Compra de UN numero (compat): b.number = 12. La orden es de tamaño 1.
+      if (typeof b.number !== "number") {
+        return json(res, 400, { error: "number o numbers requeridos" });
+      }
+      const p = await store.reserve(parts[2], b.number, b.buyer, method);
       return json(res, 201, {
         purchaseId: p.id, number: p.number, reference: p.reference,
+        orderRef: p.orderRef,
         amountInCents: p.amountCents, currency: "COP",
+        count: 1, numbers: [p.number], purchaseIds: [p.id],
         publicKey: config.wompi.publicKey,
         integritySignature: integritySignature(p.reference, String(p.amountCents), "COP", config.wompi.integrityKey),
         status: p.status,
@@ -514,6 +539,22 @@ export async function handler(req, res) {
       return json(res, 200, {
         purchaseId: p.id, status: p.status, receiptAt: p.receiptAt,
         mensaje: "Comprobante recibido. Tu número queda reservado hasta que un administrador lo verifique.",
+      });
+    }
+
+    // POST /api/orders/:orderRef/receipt -> UN comprobante para toda la orden
+    // (compra de varios numeros con un solo pago). Se adjunta a todos sus numeros.
+    if (M === "POST" && parts[0] === "api" && parts[1] === "orders" && parts[3] === "receipt") {
+      await enforceRateLimit(store, req, LIMITS.receipt);
+      const b = await readBody(req);
+      const crudo = String(b.base64 || b.data || "");
+      const base64 = crudo.includes(",") ? crudo.slice(crudo.indexOf(",") + 1) : crudo;
+      let bytes;
+      try { bytes = Buffer.from(base64, "base64"); } catch { throw httpError(400, "base64 invalido"); }
+      const filas = await store.attachReceiptToOrder(parts[2], { bytes, mime: b.mime });
+      return json(res, 200, {
+        orderRef: parts[2], count: filas.length, receiptAt: filas[0]?.receiptAt,
+        mensaje: "Comprobante recibido. Tus números quedan reservados hasta que un administrador los verifique.",
       });
     }
 
@@ -676,17 +717,20 @@ export async function handler(req, res) {
       if (!tx?.reference) return json(res, 400, { error: "Evento sin transaction.reference" });
       if (await store.alreadyProcessed(tx.id)) return json(res, 200, { idempotent: true });
       await store.markProcessed(tx.id);
-      const purchase = await store.findByReference(tx.reference);
-      if (!purchase) return json(res, 200, { ignored: true, reason: "reference desconocida" });
+      // La referencia del pago es la de la ORDEN (order_ref). Una compra de un solo
+      // numero tiene order_ref = reference, asi que esto la encuentra igual.
+      const filas = await store.findByOrderRef(tx.reference);
+      if (!filas.length) return json(res, 200, { ignored: true, reason: "reference desconocida" });
       const action = actionForStatus(tx.status);
       if (action === "SELL") {
-        await store.markSold(purchase, { approvedBy: "wompi", wompiTransactionId: tx.id });
-        const pub = await maybePublish(store, purchase.slug);
-        return json(res, 200, { ok: true, action, published: pub.published });
+        // Un solo pago aprobado -> se venden TODOS los numeros de la orden.
+        await store.approveOrder(tx.reference, { approvedBy: "wompi", wompiTransactionId: tx.id });
+        const pub = await maybePublish(store, filas[0].slug);
+        return json(res, 200, { ok: true, action, count: filas.length, published: pub.published });
       }
       if (action === "RELEASE") {
-        await store.reject(purchase.id, { reason: `Wompi ${tx.status}` });
-        return json(res, 200, { ok: true, action });
+        await store.rejectOrder(tx.reference, { reason: `Wompi ${tx.status}` });
+        return json(res, 200, { ok: true, action, count: filas.length });
       }
       return json(res, 200, { ok: true, action: "WAIT" });
     }

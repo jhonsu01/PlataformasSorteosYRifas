@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { httpError, pseudonym, motivoNoDisponible, normalizeCity, phoneKey } from "./store.js";
+import { httpError, pseudonym, motivoNoDisponible, normalizeCity, phoneKey, MAX_NUMBERS_PER_ORDER } from "./store.js";
 import {
   normalizeMedia, normalizePrizeItems, normalizeTheme, prizeTotalCents,
 } from "./raffle-media.js";
@@ -28,7 +28,7 @@ const iso = (d) => (d ? new Date(d).toISOString() : null);
  * soldPurchases puede devolver 1000 filas: serian cientos de megas cruzando la
  * red para acabar descartados. La imagen se pide explicitamente con getReceipt.
  */
-const COLS_PURCHASE = `id, slug, number, method, status, reference, amount_cents,
+const COLS_PURCHASE = `id, slug, number, method, status, reference, order_ref, amount_cents,
   buyer_public, buyer_city, private, wompi_transaction_id, purchased_at, verified_at,
   approved_by, approved_by_id, approved_by_name, approved_by_role, note, receipt_at`;
 
@@ -73,6 +73,7 @@ function mapPurchase(p) {
     status: p.status,
     reference: p.reference,
     amountCents: Number(p.amount_cents),
+    orderRef: p.order_ref || p.reference,
     buyerPublic: p.buyer_public,
     buyerCity: p.buyer_city || null,
     private: p.private || {},
@@ -275,7 +276,7 @@ export async function createPostgresStore(
     );
   }
 
-  async function reserve(slug, number, buyer, method = "MANUAL") {
+  async function reserve(slug, number, buyer, method = "MANUAL", orderRef = null) {
     const raffle = await getRaffle(slug);
     // Se valida en el servidor, no solo escondiendo el boton en la app: apagar
     // la pasarela debe cerrarla de verdad, aunque llamen a la API a mano.
@@ -286,6 +287,7 @@ export async function createPostgresStore(
     }
     const id = crypto.randomUUID();
     const reference = `RAFFLE-${slug}-NUM-${number}-${id}`;
+    const oref = orderRef || reference; // una compra de 1 numero es su propia orden
     // El pago manual necesita mas tiempo: abrir Nequi, pagar, capturar y volver.
     const minutos = method === "MANUAL" ? manualReserveMinutes : reserveMinutes;
     const until = new Date(Date.now() + minutos * 60_000);
@@ -323,9 +325,9 @@ export async function createPostgresStore(
 
       // 2) Crear la compra.
       const { rows } = await c.query(
-        `INSERT INTO purchases (id,slug,number,method,status,reference,amount_cents,buyer_public,buyer_city,private)
-         VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9) RETURNING *`,
-        [id, slug, number, method, reference, raffle.priceCents,
+        `INSERT INTO purchases (id,slug,number,method,status,reference,order_ref,amount_cents,buyer_public,buyer_city,private)
+         VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9,$10) RETURNING *`,
+        [id, slug, number, method, reference, oref, raffle.priceCents,
          pseudonym(buyer.firstName, buyer.lastName),
          normalizeCity(buyer.city),
          JSON.stringify({ phone: buyer.phone || null, email: buyer.email || null, document: buyer.document || null })]
@@ -334,6 +336,72 @@ export async function createPostgresStore(
       // 3) Enlazar ticket -> compra.
       await c.query(`UPDATE tickets SET purchase_id=$3 WHERE slug=$1 AND number=$2`, [slug, number, id]);
       return mapPurchase(rows[0]);
+    });
+  }
+
+  /**
+   * Reserva VARIOS numeros (hasta MAX_NUMBERS_PER_ORDER) en UNA orden con un solo
+   * pago. Todo-o-nada: se reclaman todos los tickets en la MISMA transaccion; si
+   * alguno no esta libre, la transaccion entera hace rollback y no se aparta nada.
+   */
+  async function reserveMany(slug, numbers, buyer, method = "MANUAL") {
+    const raffle = await getRaffle(slug);
+    const info = await paymentInfo(slug);
+    assertMetodoPermitido(info, method);
+
+    if (!Array.isArray(numbers) || numbers.length === 0) throw httpError(400, "Debes elegir al menos un numero");
+    const unicos = [...new Set(numbers)];
+    if (unicos.length !== numbers.length) throw httpError(400, "Hay numeros repetidos");
+    if (unicos.length > MAX_NUMBERS_PER_ORDER) throw httpError(400, `Maximo ${MAX_NUMBERS_PER_ORDER} numeros por compra`);
+    for (const n of unicos) {
+      if (typeof n !== "number" || !Number.isInteger(n)) throw httpError(400, "Numero invalido");
+      if (n < raffle.numberRange.min || n > raffle.numberRange.max) throw httpError(404, `Numero ${n} fuera de rango`);
+    }
+
+    const orderRef = `ORD-${slug}-${crypto.randomUUID()}`;
+    const minutos = method === "MANUAL" ? manualReserveMinutes : reserveMinutes;
+    const until = new Date(Date.now() + minutos * 60_000);
+
+    return tx(async (c) => {
+      const creadas = [];
+      for (const number of unicos) {
+        const id = crypto.randomUUID();
+        const reference = `RAFFLE-${slug}-NUM-${number}-${id}`;
+        const claim = await c.query(
+          `UPDATE tickets SET status='RESERVED', reserved_until=$3
+             WHERE slug=$1 AND number=$2
+               AND (status='FREE' OR (
+                     status='RESERVED' AND reserved_until < now()
+                     AND (purchase_id IS NULL OR purchase_id IN (
+                       SELECT id FROM purchases WHERE receipt_at IS NULL))))
+           RETURNING number`,
+          [slug, number, until]
+        );
+        if (claim.rowCount === 0) {
+          const { rows } = await c.query(
+            `SELECT t.status, p.receipt_at FROM tickets t LEFT JOIN purchases p ON p.id = t.purchase_id
+              WHERE t.slug=$1 AND t.number=$2`,
+            [slug, number]
+          );
+          // Throw -> rollback de toda la orden: o entran todos o ninguno.
+          throw httpError(409, `Numero ${number}: ${motivoNoDisponible(rows[0] || { status: "RESERVED" }, rows[0])}`);
+        }
+        const { rows } = await c.query(
+          `INSERT INTO purchases (id,slug,number,method,status,reference,order_ref,amount_cents,buyer_public,buyer_city,private)
+           VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9,$10) RETURNING *`,
+          [id, slug, number, method, reference, orderRef, raffle.priceCents,
+           pseudonym(buyer.firstName, buyer.lastName), normalizeCity(buyer.city),
+           JSON.stringify({ phone: buyer.phone || null, email: buyer.email || null, document: buyer.document || null })]
+        );
+        await c.query(`UPDATE tickets SET purchase_id=$3 WHERE slug=$1 AND number=$2`, [slug, number, id]);
+        creadas.push(mapPurchase(rows[0]));
+      }
+      return {
+        orderRef, count: creadas.length,
+        totalCents: raffle.priceCents * creadas.length,
+        currency: raffle.currency || "COP",
+        purchases: creadas,
+      };
     });
   }
 
@@ -456,26 +524,72 @@ export async function createPostgresStore(
     });
   }
 
+  async function findByOrderRef(orderRef) {
+    const { rows } = await q(
+      `SELECT ${COLS_PURCHASE} FROM purchases WHERE order_ref=$1 ORDER BY number`, [orderRef]
+    );
+    return rows.map(mapPurchase);
+  }
+
+  /** Aprueba TODA una orden (un solo pago -> se venden todos sus numeros). */
+  async function approveOrder(orderRef, { approvedBy = "admin", approverId = null, approverName = null, approverRole = null, wompiTransactionId = null } = {}) {
+    return tx(async (c) => {
+      const upd = await c.query(
+        `UPDATE purchases SET status='APPROVED', verified_at=now(), approved_by=$2,
+                approved_by_id=$3, approved_by_name=$4, approved_by_role=$5,
+                wompi_transaction_id=COALESCE($6, wompi_transaction_id)
+           WHERE order_ref=$1 AND status <> 'APPROVED' RETURNING slug, number`,
+        [orderRef, approvedBy, approverId, approverName, approverRole, wompiTransactionId]
+      );
+      for (const r of upd.rows) {
+        await c.query(`UPDATE tickets SET status='SOLD', reserved_until=NULL WHERE slug=$1 AND number=$2`, [r.slug, r.number]);
+      }
+      return upd.rowCount;
+    });
+  }
+
+  /** Rechaza TODA una orden (libera todos sus numeros pendientes). */
+  async function rejectOrder(orderRef, { reason = "" } = {}) {
+    return tx(async (c) => {
+      const { rows } = await c.query(
+        `UPDATE purchases SET status='REJECTED', note=$2 WHERE order_ref=$1 AND status='PENDING' RETURNING id, slug, number`,
+        [orderRef, reason]
+      );
+      for (const r of rows) {
+        await c.query(
+          `UPDATE tickets SET status='FREE', reserved_until=NULL, purchase_id=NULL
+             WHERE slug=$1 AND number=$2 AND purchase_id=$3`,
+          [r.slug, r.number, r.id]
+        );
+      }
+      return rows.length;
+    });
+  }
+
+  /** Adjunta el MISMO comprobante a todos los numeros pendientes de la orden. */
+  async function attachReceiptToOrder(orderRef, { bytes, mime } = {}) {
+    const mimeReal = validarComprobante(bytes);
+    const { rows } = await q(
+      `UPDATE purchases SET receipt_image=$2, receipt_mime=$3, receipt_at=now()
+         WHERE order_ref=$1 AND status='PENDING' RETURNING ${COLS_PURCHASE}`,
+      [orderRef, bytes, mimeReal || mime]
+    );
+    if (!rows.length) throw httpError(404, "Orden sin numeros pendientes");
+    return rows.map(mapPurchase);
+  }
+
+  // Aprobar/rechazar caen sobre TODA la orden (un pago -> una decision). Para una
+  // compra de un solo numero, la orden es de tamaño 1 (comportamiento identico).
   async function approve(purchaseId, { approvedBy = "admin", approverId = null, approverName = null, approverRole = null } = {}) {
     const p = await getPurchase(purchaseId);
-    return markSold(p, { approvedBy, approverId, approverName, approverRole });
+    await approveOrder(p.orderRef, { approvedBy, approverId, approverName, approverRole });
+    return getPurchase(purchaseId);
   }
 
   async function reject(purchaseId, { reason = "" } = {}) {
-    return tx(async (c) => {
-      const { rows } = await c.query(
-        `UPDATE purchases SET status='REJECTED', note=$2 WHERE id=$1 RETURNING *`,
-        [purchaseId, reason]
-      );
-      if (!rows.length) throw httpError(404, "Compra no encontrada");
-      const p = rows[0];
-      await c.query(
-        `UPDATE tickets SET status='FREE', reserved_until=NULL, purchase_id=NULL
-           WHERE slug=$1 AND number=$2 AND purchase_id=$3`,
-        [p.slug, p.number, p.id]
-      );
-      return mapPurchase(p);
-    });
+    const p = await getPurchase(purchaseId);
+    await rejectOrder(p.orderRef, { reason });
+    return getPurchase(purchaseId);
   }
 
   /**
@@ -621,7 +735,7 @@ export async function createPostgresStore(
     // de KB. Con `*`, listar 100 compras traeria decenas de megas de imagenes
     // desde la base solo para descartarlas aqui. El comprobante se pide aparte.
     const { rows } = await q(
-      `SELECT id, slug, number, method, status, reference, amount_cents, buyer_public,
+      `SELECT id, slug, number, method, status, reference, order_ref, amount_cents, buyer_public,
               buyer_city, private, wompi_transaction_id, purchased_at, verified_at, approved_by,
               approved_by_id, approved_by_name, approved_by_role, note, receipt_at
          FROM purchases WHERE slug=$1 AND ($2::text IS NULL OR status=$2)
@@ -635,6 +749,7 @@ export async function createPostgresStore(
         status: p.status, purchasedAt: p.purchasedAt, verifiedAt: p.verifiedAt,
         hasReceipt: p.hasReceipt, receiptAt: p.receiptAt, contact: p.private,
         approvedByName: p.approvedByName, approvedByRole: p.approvedByRole, approvedById: p.approvedById,
+        orderRef: p.orderRef,
       };
     });
   }
@@ -847,7 +962,8 @@ export async function createPostgresStore(
   return {
     kind: "postgres",
     createRaffle, getRaffle, updateRaffle, markPublished,
-    reserve, getPurchase, attachReceipt, getReceipt, purchasesByPhone, approve, reject, voidPurchase, markSold,
+    reserve, reserveMany, getPurchase, attachReceipt, attachReceiptToOrder, getReceipt, purchasesByPhone,
+    approve, reject, voidPurchase, markSold, approveOrder, rejectOrder, findByOrderRef,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
     listRaffles, adminPurchases, confirmationsBySeller,
