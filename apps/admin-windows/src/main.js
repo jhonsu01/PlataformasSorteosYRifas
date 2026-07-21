@@ -198,9 +198,18 @@ function setView(name) {
   if (!session && !PUBLICAS.has(name)) name = "login";
   current = name;
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
-  document.querySelector(".sidebar").style.display = session || name === "config" ? "" : "none";
+  const conMenu = session || name === "config";
+  document.querySelector(".sidebar").style.display = conMenu ? "" : "none";
+  // El boton hamburguesa (movil) solo cuando hay menu; al navegar se cierra el cajon.
+  document.getElementById("menu-toggle")?.classList.toggle("oculto", !conMenu);
+  cerrarMenu();
   pintarUsuario();
   render();
+}
+
+function cerrarMenu() {
+  document.querySelector(".sidebar")?.classList.remove("open");
+  document.getElementById("backdrop")?.classList.remove("show");
 }
 
 function pintarUsuario() {
@@ -1370,8 +1379,16 @@ async function loadVersion() {
 }
 
 document.querySelectorAll(".nav-item").forEach((b) => {
+  // setView ya cierra el cajon movil al navegar.
   b.addEventListener("click", () => setView(b.dataset.view));
 });
+
+// Menu movil: abrir/cerrar el cajon lateral.
+document.getElementById("menu-toggle")?.addEventListener("click", () => {
+  const abierto = document.querySelector(".sidebar")?.classList.toggle("open");
+  document.getElementById("backdrop")?.classList.toggle("show", abierto);
+});
+document.getElementById("backdrop")?.addEventListener("click", cerrarMenu);
 
 (async function boot() {
   loadVersion();

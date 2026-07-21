@@ -433,10 +433,81 @@ button:hover { filter: brightness(1.05); }
 .doc-edit { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 .doc-edit .inp { margin-top: 0; }
 
+/* --------------------------- Menu movil (APK / pantallas angostas) --------------------------- */
+
+/* Ocultos en escritorio; solo aparecen en el breakpoint movil. */
+.menu-toggle {
+  display: none;
+  position: fixed;
+  top: 10px;
+  left: 12px;
+  z-index: 70;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--violet);
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+.menu-toggle.oculto { display: none !important; }
+
+.backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(17, 12, 34, 0.5);
+}
+.backdrop.show { display: block; }
+
+/* Escritorio (>=901): el layout de dos columnas de siempre. El MSI (minWidth 900)
+   nunca entra al modo movil. */
 @media (max-width: 900px) {
-  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stats { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .stat-value { font-size: 26px; }
   .form-grid { grid-template-columns: 1fr; }
   .item-edit { flex-direction: column; }
   .fechas-grid { grid-template-columns: 1fr; }
   .pago-edit { grid-template-columns: 1fr; }
+  .doc-edit { grid-template-columns: 1fr; }
+
+  /* El sidebar pasa a ser un CAJON que entra desde la izquierda. */
+  .menu-toggle { display: flex; }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 60;
+    width: 80%;
+    max-width: 300px;
+    min-width: 0;
+    height: 100dvh;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 0 0 44px rgba(0, 0, 0, 0.4);
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  /* El contenido ocupa todo el ancho; el padding-top deja sitio al boton. */
+  .content { padding: 62px 16px 24px; height: 100dvh; }
+  .topbar { flex-direction: column; gap: 12px; }
+  h1 { font-size: 21px; }
+
+  .rifa-grid { grid-template-columns: 1fr; }
+  .panel { padding: 16px; }
+  .panel-head { flex-direction: column; align-items: flex-start; }
+  .tabs { flex-wrap: wrap; }
+
+  /* Filas de comprobantes: el numero arriba, las acciones debajo (no se salen). */
+  .approval { flex-direction: column; align-items: stretch; gap: 10px; }
+  .approval .actions { flex-wrap: wrap; }
+
+  .modal-card { width: 100%; max-height: 92vh; }
+  .fechas-grid { grid-template-columns: 1fr; }
 }
