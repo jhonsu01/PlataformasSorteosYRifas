@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Sorteos y Rifas — Vendedor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div>
+          <h1>Vendedor</h1>
+          <div id="who" class="who"></div>
+        </div>
+        <div id="conn" class="conn">● conectando…</div>
+      </header>
+
+      <main id="view" class="view"><!-- render dinamico --></main>
+
+      <div class="ver">v<span id="app-version">—</span></div>
+    </div>
+
+    <!-- Barra inferior: solo aparece con sesion iniciada -->
+    <nav id="tabbar" class="tabbar" style="display:none">
+      <button data-view="rifas" class="on"><span class="ic">🎫</span>Rifas</button>
+      <button data-view="seguridad"><span class="ic">🔐</span>Seguridad</button>
+      <button data-view="config"><span class="ic">⚙️</span>Ajustes</button>
+    </nav>
+
+    <div id="modal" class="modal"></div>
+    <div id="toast" class="toast"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

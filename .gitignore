@@ -71,3 +71,4 @@ apps/web/out/
 
 # APK admin: la UI se copia de apps/admin-windows/src en cada build (fuente unica)
 apps/admin-android/app/src/main/assets/
+apps/seller-android/app/src/main/assets/
