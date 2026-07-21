@@ -1223,7 +1223,7 @@ VIEWS.comprobantes = async (el) => {
               <div class="meta">${esc(p.method)} · ${p.contact?.phone ? esc(p.contact.phone) : "sin teléfono"}${p.city ? ` · 📍 ${esc(p.city)}` : ""} · ${new Date(p.purchasedAt).toLocaleString("es-CO")}</div>
               ${!esPend && p.approvedByName ? `<div class="meta">✔️ Autorizado por: <b>${esc(p.approvedByName)}</b>${p.approvedByRole === "OPERATOR" ? " (vendedor)" : p.approvedByRole && p.approvedByRole !== "wompi" ? " (admin)" : ""}</div>` : ""}
               ${p.hasReceipt
-                ? `<button class="btn-link" data-receipt="${esc(p.id)}">🧾 Ver comprobante del pago</button>`
+                ? `<button class="btn-receipt" data-receipt="${esc(p.id)}">🧾 Ver comprobante del pago</button>`
                 : p.method === "MANUAL" ? `<div class="meta">⏳ Sin comprobante todavía</div>` : ""}
             </div>
             <div class="actions">

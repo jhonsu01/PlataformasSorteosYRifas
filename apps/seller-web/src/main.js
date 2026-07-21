@@ -213,11 +213,43 @@ async function renderComprobantes(el, slug) {
   $("#volver").onclick = () => { rifaSel = null; render(); };
   el.querySelectorAll("[data-receipt]").forEach((b) => (b.onclick = () => verComprobante(b.dataset.receipt)));
   el.querySelectorAll("[data-approve]").forEach((b) => (b.onclick = async () => {
-    if (!confirm("¿Verificar este pago? El número quedará vendido y NO podrás anularlo (eso es del administrador).")) return;
+    // Aviso IMPORTANTE antes de vender: el vendedor debe haber recibido el dinero
+    // y revisado el comprobante. Se usa un modal propio (no confirm()): el WebView
+    // de Android suprime window.confirm() y el boton parecia "no hacer nada".
+    const ok = await confirmarModal({
+      titulo: "Verificar pago",
+      mensaje: "⚠️ Antes de aprobar, confirma que YA recibiste el dinero de este número y revisaste el comprobante.\n\nAl verificar, el número queda VENDIDO y no podrás anularlo (eso solo lo hace el administrador).",
+      okLabel: "Sí, ya recibí el pago — Vender",
+    });
+    if (!ok) return;
     try { await api(`/api/purchases/${b.dataset.approve}/approve`, { method: "POST", body: {} });
       toast("Pago verificado · número vendido"); render();
     } catch (e) { toast(e.message, false); }
   }));
+}
+
+/**
+ * Confirmacion en un modal propio (Promise<boolean>). No usa window.confirm(),
+ * que el WebView de Android suprime por no tener WebChromeClient de dialogos.
+ */
+function confirmarModal({ titulo, mensaje, okLabel = "Confirmar", cancelLabel = "Cancelar" }) {
+  return new Promise((resolve) => {
+    const m = $("#modal");
+    m.classList.add("show");
+    m.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-head"><b>${esc(titulo)}</b></div>
+        <div class="modal-body" style="text-align:left">
+          <p style="white-space:pre-line;margin-bottom:16px">${esc(mensaje)}</p>
+          <button class="btn-approve" id="cm-ok" style="margin-bottom:8px">${esc(okLabel)}</button>
+          <button class="btn-ghost" id="cm-cancel">${esc(cancelLabel)}</button>
+        </div>
+      </div>`;
+    const cerrar = (val) => { m.innerHTML = ""; m.classList.remove("show"); resolve(val); };
+    $("#cm-ok").onclick = () => cerrar(true);
+    $("#cm-cancel").onclick = () => cerrar(false);
+    m.onclick = (e) => { if (e.target === m) cerrar(false); };
+  });
 }
 
 async function verComprobante(purchaseId) {

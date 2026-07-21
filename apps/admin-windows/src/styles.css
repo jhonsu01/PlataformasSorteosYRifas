@@ -118,6 +118,14 @@ h2 { font-size: 17px; margin-bottom: 14px; }
 button { border: none; border-radius: 9px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
 .btn-approve { background: var(--violet); color: #fff; }
 .btn-reject { background: #fee2e2; color: #b91c1c; }
+/* Ver comprobante: boton propio (no un link pegado a Aprobar/Rechazar) con aire
+   alrededor para que no se toque por error. */
+.btn-receipt {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #eef2ff; color: #3730a3; border: 1px solid var(--line);
+  margin: 8px 0 4px; padding: 10px 14px;
+}
+.btn-receipt:hover { background: #e4e9ff; }
 .btn-secondary { background: #eef2ff; color: #3730a3; }
 button:hover { filter: brightness(1.05); }
 
@@ -478,6 +486,12 @@ button:hover { filter: brightness(1.05); }
   .pago-edit { grid-template-columns: 1fr; }
   .doc-edit { grid-template-columns: 1fr; }
 
+  /* Comprobantes: apilar la fila para separar bien "Ver comprobante" de los
+     botones Aprobar/Rechazar (antes quedaban pegados y se tocaban por error). */
+  .approval { flex-direction: column; align-items: stretch; gap: 12px; }
+  .approval .actions { margin-top: 2px; }
+  .approval .actions button { flex: 1; }
+
   /* El sidebar pasa a ser un CAJON que entra desde la izquierda. */
   .menu-toggle { display: flex; }
   .sidebar {
@@ -492,6 +506,10 @@ button:hover { filter: brightness(1.05); }
     transform: translateX(-100%);
     transition: transform 0.25s ease;
     box-shadow: 0 0 44px rgba(0, 0, 0, 0.4);
+    /* Deja sitio arriba para que el boton hamburguesa (fixed) no tape la marca
+       ni el primer item del menu (Panel). */
+    padding-top: calc(env(safe-area-inset-top, 0px) + 82px);
+    overflow-y: auto;
   }
   .sidebar.open { transform: translateX(0); }
 

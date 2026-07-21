@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
 import android.view.ViewGroup
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
@@ -38,6 +39,11 @@ class MainActivity : ComponentActivity() {
             )
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true       // localStorage: sesion persistente
+
+            // Necesario para que el WebView atienda dialogos JS (alert/confirm) y la
+            // consola. La UI usa un modal propio, pero sin esto algunos WebView
+            // suprimen ademas otros comportamientos.
+            webChromeClient = WebChromeClient()
 
             webViewClient = object : WebViewClientCompat() {
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest) =
