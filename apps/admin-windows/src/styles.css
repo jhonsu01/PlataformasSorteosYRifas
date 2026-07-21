@@ -512,3 +512,66 @@ button:hover { filter: brightness(1.05); }
   .modal-card { width: 100%; max-height: 92vh; }
   .fechas-grid { grid-template-columns: 1fr; }
 }
+
+/* --------------------------- Vendedores + filtros de comprobantes --------------------------- */
+
+.btn-secondary {
+  background: #f2effc;
+  color: var(--violet);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-secondary:hover { background: #e9e3fb; }
+.btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Filtros de la pestaña "Vendidos" */
+.conf-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 8px 0 4px;
+}
+.conf-filtros label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #6b6580; }
+.conf-filtros select, .conf-filtros input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.conf-resumen {
+  background: #f6f3fe;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin: 6px 0 12px;
+}
+
+/* Lista y tarjetas de vendedores */
+.seller-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.seller-item { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+.seller-item .who { font-weight: 700; }
+.seller-item .meta { color: #6b6580; font-size: 13px; }
+.seller-body { margin-top: 10px; }
+.seller-assign { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.seller-assign select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+
+/* Chips de rifas */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.chip-check {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 14px;
+}
+.chip-raffle {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #f2effc; color: var(--violet); border-radius: 999px; padding: 5px 6px 5px 12px; font-size: 13px; font-weight: 600;
+}
+.chip-x {
+  border: 0; background: rgba(124,58,237,0.15); color: var(--violet);
+  border-radius: 999px; width: 20px; height: 20px; line-height: 1; cursor: pointer; font-size: 12px;
+}
+.chip-x:hover { background: var(--pink); color: #fff; }
+.seller-raffles-pick { grid-column: 1 / -1; }
+
+@media (max-width: 900px) {
+  .conf-filtros { flex-direction: column; align-items: stretch; }
+  .conf-filtros label, .conf-filtros select, .conf-filtros input, .conf-filtros button { width: 100%; }
+}

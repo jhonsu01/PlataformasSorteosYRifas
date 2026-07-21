@@ -1090,6 +1090,10 @@ async function guardarPremio() {
 
 // --------------------------- Vista: Comprobantes ---------------------------
 let comprobantesTab = "PENDING";
+// Filtros de la pestaña "Vendidos": por vendedor y rango de fechas.
+let confSellerId = "";
+let confFrom = "";
+let confTo = "";
 
 /**
  * Muestra el pantallazo del pago.
@@ -1147,10 +1151,30 @@ VIEWS.comprobantes = async (el) => {
   const max = raffles.raffles.find((r) => r.slug === cfg.raffleSlug)?.numberRange?.max ?? 0;
   const esPend = comprobantesTab === "PENDING";
 
+  // Vendedores para el filtro (solo se necesitan en la pestaña "Vendidos").
+  let sellers = [];
+  if (!esPend) {
+    try { sellers = (await api("/api/admin/sellers")).sellers || []; } catch { sellers = []; }
+  }
+
+  // Filtro por vendedor + fechas sobre la lista visible (solo "Vendidos").
+  const fromT = confFrom ? new Date(confFrom + "T00:00:00").getTime() : null;
+  const toT = confTo ? new Date(confTo + "T23:59:59").getTime() : null;
+  const pasaFiltro = (p) => {
+    if (esPend) return true;
+    if (confSellerId && !(p.method === "MANUAL" && p.approvedById === confSellerId)) return false;
+    if (fromT || toT) {
+      const t = p.verifiedAt ? new Date(p.verifiedAt).getTime() : 0;
+      if (fromT && t < fromT) return false;
+      if (toT && t > toT) return false;
+    }
+    return true;
+  };
+
   // El ganador de PRIMERO: cuando hay cientos de vendidos, buscarlo a mano en la
   // lista es absurdo. Es el unico registro que el administrador va a querer ver.
   const numGanador = raffle.winner?.number ?? null;
-  const lista = [...purchases].sort((a, b) => {
+  const lista = [...purchases].filter(pasaFiltro).sort((a, b) => {
     if (a.number === numGanador) return -1;
     if (b.number === numGanador) return 1;
     // Los que ya mandaron comprobante van antes: son los que esperan respuesta.
@@ -1168,6 +1192,23 @@ VIEWS.comprobantes = async (el) => {
       <p class="muted small">${esPend
         ? "La imagen del comprobante es de acceso privado (nunca pública). Aprobar marca el número como vendido y publica el estado público."
         : "Anular libera el número y lo quita del estado público. <b>No devuelve el dinero</b>: si se pagó con Wompi, la devolución se hace en su panel."}</p>
+      ${esPend ? "" : `
+      <div class="conf-filtros">
+        <label>Vendedor
+          <select id="f-seller">
+            <option value="">Todos</option>
+            ${sellers.map((s) => `<option value="${esc(s.id)}" ${s.id === confSellerId ? "selected" : ""}>${esc(s.fullName || s.email)}</option>`).join("")}
+          </select>
+        </label>
+        <label>Desde<input id="f-from" type="date" value="${esc(confFrom)}" /></label>
+        <label>Hasta<input id="f-to" type="date" value="${esc(confTo)}" /></label>
+        <button class="btn-secondary" id="f-aplicar">Aplicar</button>
+        <button class="btn-link" id="f-limpiar">Limpiar</button>
+        <button class="btn-secondary" id="f-json" ${confSellerId ? "" : "disabled title='Elige un vendedor para exportar sus confirmaciones'"}>⬇️ Descargar JSON</button>
+      </div>
+      <div class="conf-resumen">
+        <b>${lista.filter((p) => p.method === "MANUAL").length}</b> número(s) confirmado(s) manualmente${confSellerId ? ` por <b>${esc(sellers.find((s) => s.id === confSellerId)?.fullName || "el vendedor")}</b>` : ""}${(confFrom || confTo) ? ` en el rango elegido` : ""}.
+      </div>`}
       <ul class="approvals">
         ${lista.length === 0 ? `<li class="muted">${esPend ? "No hay comprobantes pendientes. 🎉" : "Aún no hay números vendidos."}</li>` : ""}
         ${lista.map((p) => {
@@ -1180,6 +1221,7 @@ VIEWS.comprobantes = async (el) => {
                 ${esc(p.buyer)} · Número ${padNum(p.number, max)}
               </div>
               <div class="meta">${esc(p.method)} · ${p.contact?.phone ? esc(p.contact.phone) : "sin teléfono"}${p.city ? ` · 📍 ${esc(p.city)}` : ""} · ${new Date(p.purchasedAt).toLocaleString("es-CO")}</div>
+              ${!esPend && p.approvedByName ? `<div class="meta">✔️ Autorizado por: <b>${esc(p.approvedByName)}</b>${p.approvedByRole === "OPERATOR" ? " (vendedor)" : p.approvedByRole && p.approvedByRole !== "wompi" ? " (admin)" : ""}</div>` : ""}
               ${p.hasReceipt
                 ? `<button class="btn-link" data-receipt="${esc(p.id)}">🧾 Ver comprobante del pago</button>`
                 : p.method === "MANUAL" ? `<div class="meta">⏳ Sin comprobante todavía</div>` : ""}
@@ -1205,6 +1247,37 @@ VIEWS.comprobantes = async (el) => {
   el.querySelectorAll("[data-tab]").forEach((b) => {
     b.onclick = () => { comprobantesTab = b.dataset.tab; render(); };
   });
+
+  // Filtros de "Vendidos".
+  const fAplicar = $("#f-aplicar");
+  if (fAplicar) fAplicar.onclick = () => {
+    confSellerId = $("#f-seller").value;
+    confFrom = $("#f-from").value;
+    confTo = $("#f-to").value;
+    render();
+  };
+  const fLimpiar = $("#f-limpiar");
+  if (fLimpiar) fLimpiar.onclick = () => { confSellerId = ""; confFrom = ""; confTo = ""; render(); };
+  const fJson = $("#f-json");
+  if (fJson) fJson.onclick = async () => {
+    try {
+      const qs = new URLSearchParams({ slug: cfg.raffleSlug, download: "1" });
+      if (confSellerId) qs.set("sellerId", confSellerId);
+      if (confFrom) qs.set("from", new Date(confFrom + "T00:00:00").toISOString());
+      if (confTo) qs.set("to", new Date(confTo + "T23:59:59").toISOString());
+      const res = await fetch(`${cfg.backendUrl.replace(/\/$/, "")}/api/admin/confirmations?${qs}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) throw new Error(`No se pudo exportar (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `confirmaciones-${cfg.raffleSlug}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      toast("JSON descargado");
+    } catch (e) { toast(e.message, false); }
+  };
 
   el.querySelectorAll("[data-receipt]").forEach((b) => {
     b.onclick = () => verComprobante(b.dataset.receipt);
@@ -1370,6 +1443,118 @@ VIEWS.apoyo = async (el) => {
     e.preventDefault();
     abrirExterno("https://github.com/jhonsu01/PlataformasSorteosYRifas");
   };
+};
+
+// --------------------------- Vista: Usuarios vendedores ---------------------------
+VIEWS.vendedores = async (el) => {
+  await checkHealth();
+  if (!backendOnline) { el.innerHTML = backendBanner(); return; }
+  const [{ sellers }, { raffles }] = await Promise.all([
+    api("/api/admin/sellers"),
+    api("/api/raffles"),
+  ]);
+  const rotulo = (slug) => raffles.find((r) => r.slug === slug)?.title || slug;
+
+  el.innerHTML = `
+    <header class="topbar"><div><h1>Usuarios vendedores</h1><p class="muted">Promotores que verifican pagos manuales de las rifas que les asignes</p></div></header>
+
+    <section class="panel">
+      <h2>Crear vendedor</h2>
+      <p class="muted small">La cuenta queda <b>activa</b> al crearla. Se le enviará un correo con sus datos de ingreso, el enlace de descarga de la app y los pasos a seguir. El vendedor podrá activar su propio 2FA desde la app.</p>
+      <form id="form-seller" class="form-grid">
+        <label>Nombre del vendedor<input name="fullName" required placeholder="Ej: María Pérez" /></label>
+        <label>Correo<input name="email" type="email" required placeholder="vendedor@correo.com" /></label>
+        <label>Contraseña<input name="password" type="text" required minlength="8" placeholder="mínimo 8 caracteres" /></label>
+        <div class="seller-raffles-pick">
+          <span class="muted small">Rifas que podrá verificar:</span>
+          <div class="chips">
+            ${raffles.length ? raffles.map((r) => `
+              <label class="chip-check"><input type="checkbox" name="raffle" value="${esc(r.slug)}" /> ${esc(r.title)}</label>
+            `).join("") : `<span class="muted small">No hay rifas creadas todavía.</span>`}
+          </div>
+        </div>
+        <div class="form-actions"><button type="submit" class="btn-approve">Crear y enviar correo</button></div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Vendedores (${sellers.length})</h2>
+      <ul class="seller-list">
+        ${sellers.length === 0 ? `<li class="muted">Aún no hay vendedores.</li>` : ""}
+        ${sellers.map((s) => `
+          <li class="seller-item" data-id="${esc(s.id)}">
+            <div class="seller-head">
+              <div>
+                <div class="who">${esc(s.fullName || s.email)}</div>
+                <div class="meta">${esc(s.email)} · 2FA: ${s.totpEnabled ? "✅ activo" : "— sin activar"}</div>
+              </div>
+            </div>
+            <div class="seller-body">
+              <div class="muted small">Rifas asignadas:</div>
+              <div class="chips">
+                ${(s.raffles || []).length ? s.raffles.map((slug) => `
+                  <span class="chip-raffle">${esc(rotulo(slug))}
+                    <button class="chip-x" title="Revocar acceso a esta rifa" data-revoke="${esc(slug)}">✕</button>
+                  </span>`).join("") : `<span class="muted small">Ninguna. Asígnale abajo.</span>`}
+              </div>
+              <div class="seller-assign">
+                <select class="assign-select">
+                  <option value="">Asignar rifa…</option>
+                  ${raffles.filter((r) => !(s.raffles || []).includes(r.slug))
+                    .map((r) => `<option value="${esc(r.slug)}">${esc(r.title)}</option>`).join("")}
+                </select>
+                <button class="btn-secondary assign-btn">Asignar</button>
+              </div>
+            </div>
+          </li>`).join("")}
+      </ul>
+    </section>`;
+
+  // Crear vendedor
+  $("#form-seller").onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const raffleSlugs = fd.getAll("raffle");
+    try {
+      const r = await api("/api/admin/sellers", {
+        method: "POST",
+        body: {
+          fullName: fd.get("fullName"),
+          email: fd.get("email"),
+          password: fd.get("password"),
+          raffles: raffleSlugs,
+        },
+      });
+      if (r.emailSent) toast("Vendedor creado. Correo enviado con sus datos.");
+      else if (!r.emailConfigured) toast("Vendedor creado. ⚠️ Correo no configurado en el backend: pásale los datos a mano.", false);
+      else toast(`Vendedor creado, pero el correo falló: ${r.emailError || "revisa GMAIL_*"}. Pásale los datos a mano.`, false);
+      render();
+    } catch (err) { toast(err.message, false); }
+  };
+
+  // Revocar una rifa
+  el.querySelectorAll("[data-revoke]").forEach((b) => {
+    b.onclick = async () => {
+      const id = b.closest(".seller-item").dataset.id;
+      const slug = b.dataset.revoke;
+      if (!confirm(`¿Revocar el acceso a "${rotulo(slug)}"?\nLa cuenta del vendedor NO se elimina.`)) return;
+      try { await api(`/api/admin/sellers/${id}/raffles/${encodeURIComponent(slug)}`, { method: "DELETE" });
+        toast("Acceso revocado"); render();
+      } catch (err) { toast(err.message, false); }
+    };
+  });
+
+  // Asignar una rifa
+  el.querySelectorAll(".seller-item").forEach((li) => {
+    const btn = li.querySelector(".assign-btn");
+    const sel = li.querySelector(".assign-select");
+    if (btn) btn.onclick = async () => {
+      if (!sel.value) return;
+      try { await api(`/api/admin/sellers/${li.dataset.id}/raffles`, { method: "POST", body: { raffles: [sel.value] } });
+        toast("Rifa asignada"); render();
+      } catch (err) { toast(err.message, false); }
+    };
+  });
 };
 
 // --------------------------- Arranque ---------------------------

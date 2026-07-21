@@ -3,7 +3,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import { createStore } from "../src/store.js";
+import { handler } from "../src/app.js";
 
 const nueva = (store, slug) =>
   store.createRaffle({
@@ -100,4 +102,41 @@ test("confirmationsBySeller respeta el rango de fechas", () => {
   const pasado = new Date(Date.now() - 864e5).toISOString();
   const hay = store.confirmationsBySeller("a", { sellerId: v.id, from: pasado });
   assert.equal(hay.length, 1);
+});
+
+// --------------------------- Enrutado / permisos (handler) ---------------------------
+function pedir(server, method, path, { token, body } = {}) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { host: "127.0.0.1", port: server.address().port, method, path,
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => resolve({ status: res.statusCode, body: (() => { try { return JSON.parse(data); } catch { return data; } })() }));
+      }
+    );
+    if (body && method !== "GET") req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+test("los endpoints de vendedores exigen autenticacion", async (t) => {
+  const server = http.createServer(handler);
+  await new Promise((r) => server.listen(0, r));
+  t.after(() => server.close());
+
+  const protegidos = [
+    ["GET", "/api/admin/sellers"],
+    ["POST", "/api/admin/sellers"],
+    ["POST", "/api/admin/sellers/abc/raffles"],
+    ["DELETE", "/api/admin/sellers/abc/raffles/xyz"],
+    ["GET", "/api/admin/confirmations?slug=sorteo-demo"],
+    ["GET", "/api/seller/raffles"],
+  ];
+  for (const [m, p] of protegidos) {
+    // Sin body: un DELETE/GET con cuerpo hace que Node responda 400 antes del handler.
+    const r = await pedir(server, m, p, m === "POST" ? { body: {} } : {});
+    assert.equal(r.status, 401, `${m} ${p} deberia exigir autenticacion`);
+  }
 });
