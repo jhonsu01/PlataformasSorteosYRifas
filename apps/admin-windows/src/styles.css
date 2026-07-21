@@ -126,6 +126,11 @@ button { border: none; border-radius: 9px; padding: 9px 16px; font-size: 13px; f
   margin: 8px 0 4px; padding: 10px 14px;
 }
 .btn-receipt:hover { background: #e4e9ff; }
+/* Distintivo de compra de varios numeros con un solo pago. */
+.badge-orden {
+  display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700;
+  background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 2px 8px; vertical-align: middle;
+}
 .btn-secondary { background: #eef2ff; color: #3730a3; }
 button:hover { filter: brightness(1.05); }
 

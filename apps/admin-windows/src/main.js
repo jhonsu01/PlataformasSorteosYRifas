@@ -1151,6 +1151,11 @@ VIEWS.comprobantes = async (el) => {
   const max = raffles.raffles.find((r) => r.slug === cfg.raffleSlug)?.numberRange?.max ?? 0;
   const esPend = comprobantesTab === "PENDING";
 
+  // Cuantos numeros tiene cada orden (varios numeros = un solo pago). Se usa para
+  // avisar en cada fila que es parte de una compra de varios numeros.
+  const ordenCount = {};
+  for (const p of purchases) { const k = p.orderRef || p.id; ordenCount[k] = (ordenCount[k] || 0) + 1; }
+
   // Vendedores para el filtro (solo se necesitan en la pestaña "Vendidos").
   let sellers = [];
   if (!esPend) {
@@ -1190,7 +1195,7 @@ VIEWS.comprobantes = async (el) => {
         <button class="tab ${esPend ? "" : "tab-on"}" data-tab="APPROVED">Vendidos</button>
       </div>
       <p class="muted small">${esPend
-        ? "La imagen del comprobante es de acceso privado (nunca pública). Aprobar marca el número como vendido y publica el estado público."
+        ? "La imagen del comprobante es de acceso privado (nunca pública). Aprobar marca el número como vendido y publica el estado público. En una <b>orden de varios números</b> (un solo pago), aprobar o rechazar afecta a <b>todos</b> sus números."
         : "Anular libera el número y lo quita del estado público. <b>No devuelve el dinero</b>: si se pagó con Wompi, la devolución se hace en su panel."}</p>
       ${esPend ? "" : `
       <div class="conf-filtros">
@@ -1219,6 +1224,7 @@ VIEWS.comprobantes = async (el) => {
               <div class="who">
                 ${esGanador ? `<span class="badge-win">🏆 GANADOR</span> ` : ""}
                 ${esc(p.buyer)} · Número ${padNum(p.number, max)}
+                ${ordenCount[p.orderRef || p.id] > 1 ? `<span class="badge-orden" title="Compra de varios números con un solo pago. Aprobar o rechazar afecta a toda la orden.">🧩 orden de ${ordenCount[p.orderRef || p.id]}</span>` : ""}
               </div>
               <div class="meta">${esc(p.method)} · ${p.contact?.phone ? esc(p.contact.phone) : "sin teléfono"}${p.city ? ` · 📍 ${esc(p.city)}` : ""} · ${new Date(p.purchasedAt).toLocaleString("es-CO")}</div>
               ${!esPend && p.approvedByName ? `<div class="meta">✔️ Autorizado por: <b>${esc(p.approvedByName)}</b>${p.approvedByRole === "OPERATOR" ? " (vendedor)" : p.approvedByRole && p.approvedByRole !== "wompi" ? " (admin)" : ""}</div>` : ""}
