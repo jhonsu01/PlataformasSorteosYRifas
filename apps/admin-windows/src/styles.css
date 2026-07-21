@@ -439,7 +439,8 @@ button:hover { filter: brightness(1.05); }
 .menu-toggle {
   display: none;
   position: fixed;
-  top: 10px;
+  /* Bajo la barra de estado / notch del celular para no tapar la hora. */
+  top: calc(env(safe-area-inset-top, 0px) + 30px);
   left: 12px;
   z-index: 70;
   width: 44px;
@@ -495,7 +496,7 @@ button:hover { filter: brightness(1.05); }
   .sidebar.open { transform: translateX(0); }
 
   /* El contenido ocupa todo el ancho; el padding-top deja sitio al boton. */
-  .content { padding: 62px 16px 24px; height: 100dvh; }
+  .content { padding: calc(env(safe-area-inset-top, 0px) + 84px) 16px 24px; height: 100dvh; }
   .topbar { flex-direction: column; gap: 12px; }
   h1 { font-size: 21px; }
 

@@ -14,9 +14,30 @@ import { publishPublicState, uploadImage } from "./publisher.js";
 import { httpError } from "./http-error.js";
 import {
   login, refreshSession, logout, requireAuth, requireLevel,
-  setupTotp, enableTotp, publicUser,
+  setupTotp, enableTotp, publicUser, hashPassword, ROLE_LEVEL,
 } from "./auth.js";
 import { enforceRateLimit, LIMITS } from "./rate-limit.js";
+import { sendSellerWelcome } from "./email.js";
+import { isEmailConfigured } from "./config.js";
+
+/**
+ * Un ADMIN+ pasa siempre. Un OPERATOR (vendedor) solo si la rifa esta entre las
+ * que le asignaron. Se usa para que el vendedor no vea ni toque rifas ajenas.
+ */
+async function assertRaffleAccess(store, user, slug) {
+  if ((ROLE_LEVEL[user.role] || 0) >= ROLE_LEVEL.ADMIN) return;
+  if (!(await store.sellerHasRaffle(user.id, slug))) {
+    throw httpError(403, "No tienes esta rifa asignada");
+  }
+}
+
+/** Normaliza y valida una lista de slugs contra las rifas existentes. */
+async function slugsValidos(store, slugs) {
+  const todas = new Set((await store.listRaffles()).map((r) => r.slug));
+  const limpio = [...new Set((Array.isArray(slugs) ? slugs : []).map((s) => String(s || "").trim()).filter(Boolean))];
+  for (const s of limpio) if (!todas.has(s)) throw httpError(404, `Rifa no encontrada: ${s}`);
+  return limpio;
+}
 
 const DEMO = {
   slug: "sorteo-demo",
@@ -100,7 +121,7 @@ async function ensureDemo(store) {
 // ---------------------------------------------------------------------------
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
@@ -250,6 +271,103 @@ export async function handler(req, res) {
       }
     }
 
+    // ---------------- Vendedores: lado del propio vendedor ----------------
+    // GET /api/seller/raffles -> las rifas que me asignaron (para la app de vendedor).
+    if (M === "GET" && parts[0] === "api" && parts[1] === "seller" && parts[2] === "raffles") {
+      const user = requireLevel(await requireAuth(req, store), "OPERATOR");
+      const mias = new Set(await store.sellerRaffles(user.id));
+      const raffles = (await store.listRaffles()).filter((r) => mias.has(r.slug));
+      return json(res, 200, { raffles });
+    }
+
+    // ---------------- Vendedores: administracion (ADMIN+) ----------------
+    if (parts[0] === "api" && parts[1] === "admin" && parts[2] === "sellers") {
+      // GET /api/admin/sellers -> lista de vendedores con sus rifas.
+      if (M === "GET" && parts.length === 3) {
+        requireLevel(await requireAuth(req, store), "ADMIN");
+        return json(res, 200, { sellers: await store.listSellers() });
+      }
+
+      // POST /api/admin/sellers -> crea un vendedor (nombre, correo, clave), lo
+      // deja ACTIVO, le asigna rifas y le manda el correo con sus datos.
+      if (M === "POST" && parts.length === 3) {
+        const admin = requireLevel(await requireAuth(req, store), "ADMIN");
+        const b = await readBody(req);
+        const fullName = String(b.fullName || b.name || "").trim();
+        const email = String(b.email || "").trim().toLowerCase();
+        const password = String(b.password || "");
+        if (!fullName) throw httpError(400, "Falta el nombre del vendedor");
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw httpError(400, "Correo invalido");
+        if (password.length < 8) throw httpError(400, "La contrasena debe tener al menos 8 caracteres");
+        const slugs = await slugsValidos(store, b.raffles);
+
+        const passwordHash = await hashPassword(password);
+        const user = await store.createAdmin({ email, passwordHash, role: "OPERATOR", fullName });
+        if (slugs.length) await store.assignSellerRaffles(user.id, slugs, admin.email);
+        await store.audit({ actor: admin.email, action: "CREATE_SELLER", entityType: "admin_user", entityId: user.id, after: { email, raffles: slugs } });
+
+        // Correo de bienvenida: mejor esfuerzo. Si falla, el vendedor ya existe y
+        // el admin ve el aviso para pasarle los datos a mano.
+        const mail = await sendSellerWelcome({ fullName, email, password, raffles: slugs });
+
+        return json(res, 201, {
+          seller: { id: user.id, email, fullName, totpEnabled: false, raffles: slugs },
+          emailConfigured: isEmailConfigured(),
+          emailSent: mail.sent,
+          emailError: mail.error || null,
+        });
+      }
+
+      // POST /api/admin/sellers/:id/raffles -> asigna (agrega) rifas.
+      if (M === "POST" && parts.length === 5 && parts[4] === "raffles") {
+        const admin = requireLevel(await requireAuth(req, store), "ADMIN");
+        const b = await readBody(req);
+        const slugs = await slugsValidos(store, b.raffles);
+        const raffles = await store.assignSellerRaffles(parts[3], slugs, admin.email);
+        await store.audit({ actor: admin.email, action: "ASSIGN_SELLER_RAFFLES", entityType: "admin_user", entityId: parts[3], after: { raffles: slugs } });
+        return json(res, 200, { raffles });
+      }
+
+      // DELETE /api/admin/sellers/:id/raffles/:slug -> revoca UNA rifa (no borra la cuenta).
+      if (M === "DELETE" && parts.length === 6 && parts[4] === "raffles") {
+        const admin = requireLevel(await requireAuth(req, store), "ADMIN");
+        const raffles = await store.revokeSellerRaffle(parts[3], parts[5]);
+        await store.audit({ actor: admin.email, action: "REVOKE_SELLER_RAFFLE", entityType: "admin_user", entityId: parts[3], after: { revoked: parts[5] } });
+        return json(res, 200, { raffles });
+      }
+    }
+
+    // GET /api/admin/confirmations?slug=&sellerId=&from=&to=&download=1
+    // Confirmaciones manuales filtrables por vendedor y rango de fechas: conteo,
+    // detalle y (con download=1) descarga como JSON.
+    if (M === "GET" && parts[0] === "api" && parts[1] === "admin" && parts[2] === "confirmations") {
+      requireLevel(await requireAuth(req, store), "ADMIN");
+      const slug = url.searchParams.get("slug");
+      if (!slug) throw httpError(400, "Falta el parametro slug");
+      await store.getRaffle(slug);
+      const sellerId = url.searchParams.get("sellerId") || null;
+      const from = url.searchParams.get("from") || null;
+      const to = url.searchParams.get("to") || null;
+      const items = await store.confirmationsBySeller(slug, { sellerId, from, to });
+      const payload = {
+        slug, sellerId, from, to,
+        count: items.length,
+        numbers: items.map((i) => i.number),
+        totalCents: items.reduce((s, i) => s + (i.amountCents || 0), 0),
+        items,
+      };
+      if (url.searchParams.get("download")) {
+        cors(res);
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="confirmaciones-${slug}${sellerId ? "-" + sellerId : ""}.json"`,
+          "Cache-Control": "private, no-store",
+        });
+        return res.end(JSON.stringify(payload, null, 2));
+      }
+      return json(res, 200, payload);
+    }
+
     if (M === "GET" && parts[0] === "api" && parts[1] === "raffles" && parts.length === 2) {
       return json(res, 200, { raffles: await store.listRaffles() });
     }
@@ -291,9 +409,10 @@ export async function handler(req, res) {
 
     // Contiene datos de contacto privados -> solo roles autorizados (Guia 5.2).
     if (M === "GET" && parts[0] === "api" && parts[1] === "raffles" && parts[3] === "purchases") {
-      requireLevel(await requireAuth(req, store), "OPERATOR");
+      const user = requireLevel(await requireAuth(req, store), "OPERATOR");
       const slug = parts[2];
       await store.getRaffle(slug);
+      await assertRaffleAccess(store, user, slug); // el vendedor solo ve sus rifas
       return json(res, 200, { purchases: await store.adminPurchases(slug, url.searchParams.get("status") || null) });
     }
 
@@ -401,7 +520,9 @@ export async function handler(req, res) {
     // GET /api/purchases/:id/receipt -> la imagen del comprobante.
     // PRIVADO: lleva nombre completo, banco y a veces el saldo de quien pago.
     if (M === "GET" && parts[0] === "api" && parts[1] === "purchases" && parts[3] === "receipt") {
-      requireLevel(await requireAuth(req, store), "OPERATOR");
+      const user = requireLevel(await requireAuth(req, store), "OPERATOR");
+      const target = await store.getPurchase(parts[2]);
+      await assertRaffleAccess(store, user, target.slug); // el vendedor solo ve sus rifas
       const { bytes, mime } = await store.getReceipt(parts[2]);
       cors(res);
       res.writeHead(200, {
@@ -422,10 +543,19 @@ export async function handler(req, res) {
       return json(res, 200, await store.paymentInfo(parts[2]));
     }
 
-    // Aprobar vende el numero: solo ADMIN+ (un abierto aqui = numeros vendidos sin pagar).
+    // Aprobar vende el numero. ADMIN+ siempre; un VENDEDOR (OPERATOR) solo si la
+    // rifa es suya. Se registra QUIEN autorizo (id/nombre/rol) para la trazabilidad
+    // en Comprobantes. Anular/rechazar sigue siendo exclusivo del ADMIN.
     if (M === "POST" && parts[0] === "api" && parts[1] === "purchases" && parts[3] === "approve") {
-      const user = requireLevel(await requireAuth(req, store), "ADMIN");
-      const p = await store.approve(parts[2], { approvedBy: user.email });
+      const user = requireLevel(await requireAuth(req, store), "OPERATOR");
+      const target = await store.getPurchase(parts[2]);
+      await assertRaffleAccess(store, user, target.slug);
+      const p = await store.approve(parts[2], {
+        approvedBy: user.email,
+        approverId: user.id,
+        approverName: user.fullName || user.email,
+        approverRole: user.role,
+      });
       await store.audit({ actor: user.email, action: "APPROVE_PURCHASE", entityType: "purchase", entityId: p.id, after: { number: p.number, status: p.status } });
       const pub = await maybePublish(store, p.slug);
       return json(res, 200, { purchaseId: p.id, status: p.status, verifiedAt: p.verifiedAt, published: pub.published });

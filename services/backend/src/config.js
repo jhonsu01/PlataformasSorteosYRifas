@@ -91,7 +91,29 @@ export const config = {
   webPublicBase: (process.env.WEB_PUBLIC_BASE || "https://sorteos-y-rifas-web.vercel.app")
     .trim()
     .replace(/\/+$/, ""),
+
+  // Envio de correo por Gmail (contrasena de aplicacion, NO la del correo). Se usa
+  // para mandarle al vendedor sus datos de ingreso. Si no estan configuradas, la
+  // creacion del vendedor NO falla: se crea igual y el admin comparte los datos a
+  // mano (el correo es un extra, no un requisito para operar).
+  email: {
+    gmailUser: (process.env.GMAIL_USER || "").trim(),
+    gmailAppPassword: (process.env.GMAIL_APP_PASSWORD || "").replace(/\s+/g, ""),
+    // De donde "sale" el correo; por defecto el propio GMAIL_USER.
+    from: (process.env.EMAIL_FROM || process.env.GMAIL_USER || "").trim(),
+  },
+
+  // Pagina de descargas (releases de GitHub) que se incluye en el correo al
+  // vendedor para que instale la app. Sin barra final.
+  downloadBase: (process.env.DOWNLOAD_BASE ||
+    "https://github.com/jhonsu01/PlataformasSorteosYRifas/releases/latest")
+    .trim()
+    .replace(/\/+$/, ""),
 };
+
+export function isEmailConfigured() {
+  return Boolean(config.email.gmailUser && config.email.gmailAppPassword);
+}
 
 export function isGithubConfigured() {
   return Boolean(config.github.token && config.github.owner);

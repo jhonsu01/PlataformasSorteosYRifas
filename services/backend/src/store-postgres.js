@@ -30,7 +30,7 @@ const iso = (d) => (d ? new Date(d).toISOString() : null);
  */
 const COLS_PURCHASE = `id, slug, number, method, status, reference, amount_cents,
   buyer_public, buyer_city, private, wompi_transaction_id, purchased_at, verified_at,
-  approved_by, note, receipt_at`;
+  approved_by, approved_by_id, approved_by_name, approved_by_role, note, receipt_at`;
 
 // Lista blanca explicita: esta forma ES la que se publica a GitHub. Un `SELECT *`
 // mapeado a ciegas convertiria cualquier columna futura en dato publico.
@@ -84,6 +84,9 @@ function mapPurchase(p) {
     purchasedAt: iso(p.purchased_at),
     verifiedAt: iso(p.verified_at),
     approvedBy: p.approved_by,
+    approvedById: p.approved_by_id || null,
+    approvedByName: p.approved_by_name || null,
+    approvedByRole: p.approved_by_role || null,
     note: p.note,
   };
 }
@@ -430,13 +433,14 @@ export async function createPostgresStore(
     return { bytes: rows[0].receipt_image, mime: rows[0].receipt_mime || "image/jpeg" };
   }
 
-  async function markSold(purchase, { approvedBy = "wompi", wompiTransactionId = null } = {}) {
+  async function markSold(purchase, { approvedBy = "wompi", approverId = null, approverName = null, approverRole = null, wompiTransactionId = null } = {}) {
     return tx(async (c) => {
       const upd = await c.query(
         `UPDATE purchases SET status='APPROVED', verified_at=now(), approved_by=$2,
+                approved_by_id=$4, approved_by_name=$5, approved_by_role=$6,
                 wompi_transaction_id=COALESCE($3, wompi_transaction_id)
            WHERE id=$1 AND status <> 'APPROVED' RETURNING *`,
-        [purchase.id, approvedBy, wompiTransactionId]
+        [purchase.id, approvedBy, wompiTransactionId, approverId, approverName, approverRole]
       );
       if (upd.rowCount === 0) {
         const cur = await c.query(`SELECT ${COLS_PURCHASE} FROM purchases WHERE id=$1`, [purchase.id]);
@@ -452,9 +456,9 @@ export async function createPostgresStore(
     });
   }
 
-  async function approve(purchaseId, { approvedBy = "admin" } = {}) {
+  async function approve(purchaseId, { approvedBy = "admin", approverId = null, approverName = null, approverRole = null } = {}) {
     const p = await getPurchase(purchaseId);
-    return markSold(p, { approvedBy });
+    return markSold(p, { approvedBy, approverId, approverName, approverRole });
   }
 
   async function reject(purchaseId, { reason = "" } = {}) {
@@ -619,7 +623,7 @@ export async function createPostgresStore(
     const { rows } = await q(
       `SELECT id, slug, number, method, status, reference, amount_cents, buyer_public,
               buyer_city, private, wompi_transaction_id, purchased_at, verified_at, approved_by,
-              note, receipt_at
+              approved_by_id, approved_by_name, approved_by_role, note, receipt_at
          FROM purchases WHERE slug=$1 AND ($2::text IS NULL OR status=$2)
         ORDER BY purchased_at`,
       [slug, statusFilter || null]
@@ -630,8 +634,32 @@ export async function createPostgresStore(
         id: p.id, number: p.number, buyer: p.buyerPublic, city: p.buyerCity, method: p.method,
         status: p.status, purchasedAt: p.purchasedAt, verifiedAt: p.verifiedAt,
         hasReceipt: p.hasReceipt, receiptAt: p.receiptAt, contact: p.private,
+        approvedByName: p.approvedByName, approvedByRole: p.approvedByRole, approvedById: p.approvedById,
       };
     });
+  }
+
+  /** Confirmaciones manuales (APPROVED) filtrables por vendedor y rango de fechas. */
+  async function confirmationsBySeller(slug, { sellerId = null, from = null, to = null } = {}) {
+    const { rows } = await q(
+      `SELECT id, slug, number, method, reference, amount_cents, buyer_public, buyer_city,
+              verified_at, approved_by_id, approved_by_name, approved_by_role
+         FROM purchases
+        WHERE slug=$1 AND status='APPROVED' AND method='MANUAL'
+          AND ($2::uuid IS NULL OR approved_by_id=$2)
+          AND ($3::timestamptz IS NULL OR verified_at >= $3)
+          AND ($4::timestamptz IS NULL OR verified_at <= $4)
+        ORDER BY verified_at`,
+      [slug, sellerId || null, from || null, to || null]
+    );
+    return rows.map((r) => ({
+      id: r.id, number: r.number, buyer: r.buyer_public, city: r.buyer_city || null,
+      method: r.method, amountCents: Number(r.amount_cents), reference: r.reference,
+      verifiedAt: iso(r.verified_at),
+      approvedById: r.approved_by_id || null,
+      approvedByName: r.approved_by_name || null,
+      approvedByRole: r.approved_by_role || null,
+    }));
   }
 
   /**
@@ -667,7 +695,8 @@ export async function createPostgresStore(
   const mapAdmin = (u) => u && ({
     id: u.id, email: u.email, passwordHash: u.password_hash,
     totpSecret: u.totp_secret, totpEnabled: u.totp_enabled,
-    role: u.role, lastLoginAt: iso(u.last_login_at),
+    role: u.role, fullName: u.full_name || null,
+    createdAt: iso(u.created_at), lastLoginAt: iso(u.last_login_at),
   });
 
   async function countAdmins() {
@@ -675,15 +704,70 @@ export async function createPostgresStore(
     return rows[0].c;
   }
 
-  async function createAdmin({ email, passwordHash, role = "ADMIN" }) {
+  async function createAdmin({ email, passwordHash, role = "ADMIN", fullName = null }) {
     const id = crypto.randomUUID();
     const { rows } = await q(
-      `INSERT INTO admin_users (id, email, password_hash, role) VALUES ($1,$2,$3,$4)
+      `INSERT INTO admin_users (id, email, password_hash, role, full_name) VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (email) DO NOTHING RETURNING *`,
-      [id, String(email).toLowerCase().trim(), passwordHash, role]
+      [id, String(email).toLowerCase().trim(), passwordHash, role, fullName || null]
     );
-    if (!rows.length) throw httpError(409, "Ya existe un administrador con ese correo");
+    if (!rows.length) throw httpError(409, "Ya existe un usuario con ese correo");
     return mapAdmin(rows[0]);
+  }
+
+  // ------------------------------------------------------------------
+  // Vendedores (OPERATOR) y sus rifas asignadas
+  // ------------------------------------------------------------------
+  async function listSellers() {
+    const { rows } = await q(
+      `SELECT u.id, u.email, u.full_name, u.totp_enabled, u.created_at,
+              COALESCE(array_agg(sr.slug) FILTER (WHERE sr.slug IS NOT NULL), '{}') AS raffles
+         FROM admin_users u
+         LEFT JOIN seller_raffles sr ON sr.user_id = u.id
+        WHERE u.role='OPERATOR'
+        GROUP BY u.id
+        ORDER BY COALESCE(u.full_name, u.email)`
+    );
+    return rows.map((r) => ({
+      id: r.id, email: r.email, fullName: r.full_name || null,
+      totpEnabled: r.totp_enabled, createdAt: iso(r.created_at),
+      raffles: r.raffles || [],
+    }));
+  }
+
+  async function requireSeller(userId) {
+    const { rows } = await q(`SELECT id, role FROM admin_users WHERE id=$1`, [userId]);
+    if (!rows.length || rows[0].role !== "OPERATOR") throw httpError(404, "Vendedor no encontrado");
+  }
+
+  async function sellerRaffles(userId) {
+    const { rows } = await q(`SELECT slug FROM seller_raffles WHERE user_id=$1 ORDER BY slug`, [userId]);
+    return rows.map((r) => r.slug);
+  }
+
+  async function sellerHasRaffle(userId, slug) {
+    const { rows } = await q(
+      `SELECT 1 FROM seller_raffles WHERE user_id=$1 AND slug=$2`, [userId, slug]
+    );
+    return rows.length > 0;
+  }
+
+  async function assignSellerRaffles(userId, slugs, assignedBy = null) {
+    await requireSeller(userId);
+    for (const slug of slugs) {
+      await q(
+        `INSERT INTO seller_raffles (user_id, slug, assigned_by) VALUES ($1,$2,$3)
+         ON CONFLICT (user_id, slug) DO NOTHING`,
+        [userId, slug, assignedBy]
+      );
+    }
+    return sellerRaffles(userId);
+  }
+
+  async function revokeSellerRaffle(userId, slug) {
+    await requireSeller(userId);
+    await q(`DELETE FROM seller_raffles WHERE user_id=$1 AND slug=$2`, [userId, slug]);
+    return sellerRaffles(userId);
   }
 
   async function getAdminByEmail(email) {
@@ -766,7 +850,8 @@ export async function createPostgresStore(
     reserve, getPurchase, attachReceipt, getReceipt, purchasesByPhone, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
-    listRaffles, adminPurchases,
+    listRaffles, adminPurchases, confirmationsBySeller,
+    listSellers, sellerRaffles, sellerHasRaffle, assignSellerRaffles, revokeSellerRaffle,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,
     hitRateLimit, cleanupRateLimits,

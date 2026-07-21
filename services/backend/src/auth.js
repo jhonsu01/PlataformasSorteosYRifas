@@ -20,7 +20,7 @@ async function getDummyHash() {
   return dummyHash;
 }
 
-export const publicUser = (u) => ({ id: u.id, email: u.email, role: u.role, totpEnabled: u.totpEnabled });
+export const publicUser = (u) => ({ id: u.id, email: u.email, role: u.role, fullName: u.fullName || null, totpEnabled: u.totpEnabled });
 
 function bearer(req) {
   const h = req.headers?.authorization || req.headers?.Authorization || "";

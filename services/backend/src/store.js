@@ -184,6 +184,9 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
       purchasedAt: new Date().toISOString(),
       verifiedAt: null,
       approvedBy: null,
+      approvedById: null,
+      approvedByName: null,
+      approvedByRole: null,
       note: null,
     };
     purchases.set(id, purchase);
@@ -222,10 +225,10 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
   }
 
   // Aprueba (equivalente a APPROVED de Wompi): numero -> SOLD, fija verifiedAt.
-  function approve(purchaseId, { approvedBy = "admin" } = {}) {
+  function approve(purchaseId, { approvedBy = "admin", approverId = null, approverName = null, approverRole = null } = {}) {
     const p = purchases.get(purchaseId);
     if (!p) throw httpError(404, "Compra no encontrada");
-    return markSold(p, { approvedBy });
+    return markSold(p, { approvedBy, approverId, approverName, approverRole });
   }
 
   function reject(purchaseId, { reason = "" } = {}) {
@@ -261,11 +264,14 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
     return p;
   }
 
-  function markSold(p, { approvedBy = "wompi", wompiTransactionId = null } = {}) {
+  function markSold(p, { approvedBy = "wompi", approverId = null, approverName = null, approverRole = null, wompiTransactionId = null } = {}) {
     if (p.status === "APPROVED") return p; // idempotente
     p.status = "APPROVED";
     p.verifiedAt = new Date().toISOString();
     p.approvedBy = approvedBy;
+    p.approvedById = approverId;
+    p.approvedByName = approverName;
+    p.approvedByRole = approverRole;
     if (wompiTransactionId) p.wompiTransactionId = wompiTransactionId;
     const t = tickets.get(key(p.slug, p.number));
     if (t) { t.status = "SOLD"; t.reservedUntil = null; }
@@ -361,6 +367,38 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
         hasReceipt: Boolean(p.receiptAt),
         receiptAt: p.receiptAt || null,
         contact: p.private,
+        // Quien autorizo el pago (para mostrar "autorizado por: ..." en el admin).
+        approvedByName: p.approvedByName || null,
+        approvedByRole: p.approvedByRole || null,
+        approvedById: p.approvedById || null,
+      }));
+  }
+
+  /**
+   * Confirmaciones (ventas APPROVED) filtrables por vendedor y rango de fechas.
+   * Base para el conteo y la exportacion JSON del admin. `sellerId` null = todos.
+   */
+  function confirmationsBySeller(slug, { sellerId = null, from = null, to = null } = {}) {
+    const fromT = from ? new Date(from).getTime() : null;
+    const toT = to ? new Date(to).getTime() : null;
+    return [...purchases.values()]
+      .filter((p) => p.slug === slug && p.status === "APPROVED" && p.method === "MANUAL")
+      .filter((p) => (sellerId ? p.approvedById === sellerId : true))
+      .filter((p) => {
+        if (!p.verifiedAt) return false;
+        const t = new Date(p.verifiedAt).getTime();
+        if (fromT !== null && t < fromT) return false;
+        if (toT !== null && t > toT) return false;
+        return true;
+      })
+      .sort((a, b) => new Date(a.verifiedAt) - new Date(b.verifiedAt))
+      .map((p) => ({
+        id: p.id, number: p.number, buyer: p.buyerPublic, city: p.buyerCity || null,
+        method: p.method, amountCents: p.amountCents, reference: p.reference,
+        verifiedAt: p.verifiedAt,
+        approvedById: p.approvedById || null,
+        approvedByName: p.approvedByName || null,
+        approvedByRole: p.approvedByRole || null,
       }));
   }
 
@@ -561,14 +599,69 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
 
   const countAdmins = () => admins.size;
 
-  function createAdmin({ email, passwordHash, role = "ADMIN" }) {
+  function createAdmin({ email, passwordHash, role = "ADMIN", fullName = null }) {
     const mail = String(email).toLowerCase().trim();
-    if (adminsByEmail.has(mail)) throw httpError(409, "Ya existe un administrador con ese correo");
+    if (adminsByEmail.has(mail)) throw httpError(409, "Ya existe un usuario con ese correo");
     const id = crypto.randomUUID();
-    const user = { id, email: mail, passwordHash, totpSecret: null, totpEnabled: false, role, lastLoginAt: null };
+    const user = {
+      id, email: mail, passwordHash, totpSecret: null, totpEnabled: false, role,
+      fullName: fullName || null, lastLoginAt: null, createdAt: new Date().toISOString(),
+    };
     admins.set(id, user);
     adminsByEmail.set(mail, id);
     return user;
+  }
+
+  // ------------------------------------------------------------------
+  // Vendedores (OPERATOR) y sus rifas asignadas (equivalente en memoria).
+  // ------------------------------------------------------------------
+  const sellerRafflesMap = new Map(); // userId -> Map(slug -> { assignedAt, assignedBy })
+
+  function listSellers() {
+    return [...admins.values()]
+      .filter((u) => u.role === "OPERATOR")
+      .sort((a, b) => (a.fullName || a.email).localeCompare(b.fullName || b.email))
+      .map((u) => ({
+        id: u.id,
+        email: u.email,
+        fullName: u.fullName || null,
+        totpEnabled: u.totpEnabled,
+        createdAt: u.createdAt || null,
+        raffles: [...(sellerRafflesMap.get(u.id)?.keys() || [])],
+      }));
+  }
+
+  function getSeller(userId) {
+    const u = admins.get(userId);
+    if (!u || u.role !== "OPERATOR") throw httpError(404, "Vendedor no encontrado");
+    return u;
+  }
+
+  function sellerRaffles(userId) {
+    return [...(sellerRafflesMap.get(userId)?.keys() || [])];
+  }
+
+  function sellerHasRaffle(userId, slug) {
+    return Boolean(sellerRafflesMap.get(userId)?.has(slug));
+  }
+
+  /** Asigna (agrega) rifas al vendedor. No borra las que ya tenia. */
+  function assignSellerRaffles(userId, slugs, assignedBy = null) {
+    getSeller(userId);
+    let map = sellerRafflesMap.get(userId);
+    if (!map) { map = new Map(); sellerRafflesMap.set(userId, map); }
+    for (const slug of slugs) {
+      if (!raffles.has(slug)) throw httpError(404, `Rifa no encontrada: ${slug}`);
+      if (!map.has(slug)) map.set(slug, { assignedAt: new Date().toISOString(), assignedBy });
+    }
+    return sellerRaffles(userId);
+  }
+
+  /** Revoca UNA rifa (no elimina la cuenta). */
+  function revokeSellerRaffle(userId, slug) {
+    getSeller(userId);
+    sellerRafflesMap.get(userId)?.delete(slug);
+    return sellerRaffles(userId);
   }
 
   const getAdminByEmail = (email) => admins.get(adminsByEmail.get(String(email || "").toLowerCase().trim())) || null;
@@ -632,7 +725,8 @@ export function createStore({ reserveMinutes = 15, manualReserveMinutes } = {}) 
     reserve, getPurchase, attachReceipt, getReceipt, purchasesByPhone, approve, reject, voidPurchase, markSold,
     findByReference, alreadyProcessed, markProcessed, declareWinner,
     publicRaffle, paymentInfo, publicNumbers, heldNumbers, expireReservations, soldPurchases,
-    listRaffles, adminPurchases,
+    listRaffles, adminPurchases, confirmationsBySeller,
+    listSellers, sellerRaffles, sellerHasRaffle, assignSellerRaffles, revokeSellerRaffle,
     countAdmins, createAdmin, getAdminByEmail, getAdminById, setAdminTotp, touchAdminLogin,
     saveRefreshToken, getRefreshToken, revokeRefreshToken, audit,
     hitRateLimit, cleanupRateLimits,
