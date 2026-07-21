@@ -13,11 +13,24 @@ import { copFormat, padNum } from "../../lib/rifas.js";
 export default function NumerosCliente({
   slug, min, max, priceCents, activa, sold, winner, backendBase,
 }) {
+  const MAX_SEL = 10; // tope de números por compra (debe coincidir con el backend)
   const vendidos = useMemo(() => new Map(sold.map((s) => [s.number, s])), [sold]);
   const [filtro, setFiltro] = useState(winner ? "GANADOR" : "TODOS");
   const [busqueda, setBusqueda] = useState("");
-  const [comprar, setComprar] = useState(null); // número elegido
+  const [sel, setSel] = useState(() => new Set()); // números seleccionados
+  const [comprar, setComprar] = useState(null);     // array de números al abrir el modal
+  const [aviso, setAviso] = useState(null);
   const [verMis, setVerMis] = useState(false);
+
+  const toggle = (n) => {
+    setSel((prev) => {
+      const next = new Set(prev);
+      if (next.has(n)) { next.delete(n); return next; }
+      if (next.size >= MAX_SEL) { setAviso(`Máximo ${MAX_SEL} números por compra`); return prev; }
+      next.add(n);
+      return next;
+    });
+  };
 
   const numeros = useMemo(() => {
     const q = busqueda.trim();
@@ -66,13 +79,14 @@ export default function NumerosCliente({
             const s = vendidos.get(n);
             const esGanador = winner?.number === n;
             const libre = !s && !esGanador;
+            const elegido = sel.has(n);
             return (
               <button
                 key={n}
                 type="button"
-                className={`num${esGanador ? " win" : s ? " sold" : ""}`}
+                className={`num${esGanador ? " win" : s ? " sold" : ""}${elegido ? " sel" : ""}`}
                 title={s ? `${padNum(n, max)} — ${s.buyer}${s.city ? ` · ${s.city}` : ""}` : `${padNum(n, max)} — libre`}
-                onClick={() => { if (libre && activa) setComprar(n); }}
+                onClick={() => { if (libre && activa) { setAviso(null); toggle(n); } }}
                 style={{ cursor: libre && activa ? "pointer" : "default" }}
               >
                 {padNum(n, max)}
@@ -84,14 +98,28 @@ export default function NumerosCliente({
 
       {activa && (
         <p className="mut small" style={{ marginTop: 14 }}>
-          Toca un número libre para comprarlo.
+          Toca los números libres (hasta {MAX_SEL}) para comprarlos juntos en un solo pago.
+          {aviso && <span className="aviso-max"> · {aviso}</span>}
         </p>
+      )}
+
+      {activa && sel.size > 0 && (
+        <div className="buy-bar">
+          <div className="buy-info">
+            <b>{sel.size}</b> número{sel.size > 1 ? "s" : ""} · {copFormat(priceCents * sel.size)}
+            <button type="button" className="buy-clear" onClick={() => setSel(new Set())}>limpiar</button>
+          </div>
+          <button type="button" className="btn" onClick={() => setComprar([...sel].sort((a, b) => a - b))}>
+            Comprar
+          </button>
+        </div>
       )}
 
       {comprar != null && (
         <CompraModal
-          slug={slug} numero={comprar} max={max} priceCents={priceCents}
-          backendBase={backendBase} onClose={() => setComprar(null)}
+          slug={slug} numeros={comprar} max={max} priceCents={priceCents}
+          backendBase={backendBase}
+          onClose={(ok) => { setComprar(null); if (ok) setSel(new Set()); }}
         />
       )}
 
@@ -256,7 +284,9 @@ function MisNumerosModal({ slug, max, backendBase, onClose }) {
   );
 }
 
-function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
+function CompraModal({ slug, numeros, max, priceCents, backendBase, onClose }) {
+  const total = priceCents * numeros.length;
+  const rotulo = numeros.map((n) => padNum(n, max)).join(", ");
   const [pago, setPago] = useState(null);        // { gatewayEnabled, manualEnabled, paymentMethods }
   const [error, setError] = useState(null);
   const [first, setFirst] = useState("");
@@ -265,7 +295,7 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
   const [city, setCity] = useState("");
   const [metodo, setMetodo] = useState(null);
   const [paso, setPaso] = useState("form");       // form | manual | enviando | ok
-  const [reserva, setReserva] = useState(null);   // { purchaseId, ... }
+  const [reserva, setReserva] = useState(null);   // { orderRef, purchaseIds, ... }
   const [copiado, setCopiado] = useState(null);
 
   useEffect(() => {
@@ -283,12 +313,12 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        number: numero, method: m,
+        numbers: numeros, method: m,
         buyer: { firstName: first.trim(), lastName: last.trim(), phone: phone.trim(), city: city.trim() },
       }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "No se pudo reservar el número");
+    if (!res.ok) throw new Error(data.error || "No se pudieron reservar los números");
     return data;
   };
 
@@ -297,13 +327,14 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
     try {
       if (metodo === "WOMPI") {
         const r = await reservar("WOMPI");
-        // Se vuelve a esta pagina con ?compra=<id>; Wompi añade sus parámetros.
-        const redirect = `${window.location.origin}${window.location.pathname}?compra=${r.purchaseId}`;
+        // Un solo pago por el total; se vuelve con ?compra=<id> (cualquier número
+        // de la orden refleja el estado, pues se aprueban todos juntos).
+        const redirect = `${window.location.origin}${window.location.pathname}?compra=${r.purchaseIds[0]}`;
         const url = "https://checkout.wompi.co/p/?" + new URLSearchParams({
           "public-key": r.publicKey,
-          currency: "COP",
+          currency: r.currency || "COP",
           "amount-in-cents": String(r.amountInCents),
-          reference: r.reference,
+          reference: r.reference,           // = orderRef
           "signature:integrity": r.integritySignature,
           "redirect-url": redirect,
         }).toString();
@@ -323,7 +354,8 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
     setError(null);
     try {
       const base64 = await comprimir(file);
-      const res = await fetch(`${backendBase}/api/purchases/${reserva.purchaseId}/receipt`, {
+      // UN comprobante para toda la orden (todos los números).
+      const res = await fetch(`${backendBase}/api/orders/${reserva.orderRef}/receipt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ base64 }),
@@ -342,18 +374,20 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
   const puedeReservar = first.trim() && last.trim() && telOk;
 
   return (
-    <div className="modal-back" onClick={onClose}>
+    <div className="modal-back" onClick={() => onClose(false)}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-top">
-          <h3 style={{ margin: 0 }}>Número {padNum(numero, max)}</h3>
-          <button className="modal-x" onClick={onClose}>✕</button>
+          <h3 style={{ margin: 0 }}>
+            {numeros.length === 1 ? `Número ${rotulo}` : `${numeros.length} números: ${rotulo}`}
+          </h3>
+          <button className="modal-x" onClick={() => onClose(false)}>✕</button>
         </div>
 
         {error && <p className="err">{error}</p>}
 
         {paso === "form" && (
           <>
-            <p className="mut small">{copFormat(priceCents)} · solo se publicará tu nombre, la inicial del apellido y tu ciudad.</p>
+            <p className="mut small">{numeros.length} número{numeros.length > 1 ? "s" : ""} · <b>{copFormat(total)}</b> · un solo pago. Solo se publicará tu nombre, la inicial del apellido y tu ciudad.</p>
             <input className="inp" placeholder="Nombre" value={first} onChange={(e) => setFirst(e.target.value)} />
             <input className="inp" placeholder="Apellido" value={last} onChange={(e) => setLast(e.target.value)} />
             <input className="inp" placeholder="Teléfono (WhatsApp)" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
@@ -378,7 +412,7 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
 
         {paso === "manual" && (
           <>
-            <p className="mut small">Transfiere {copFormat(priceCents)} a cualquiera de estas cuentas y sube el comprobante:</p>
+            <p className="mut small">Transfiere <b>{copFormat(total)}</b> (por {numeros.length} número{numeros.length > 1 ? "s" : ""}: {rotulo}) a cualquiera de estas cuentas y sube <b>un</b> comprobante:</p>
             {(pago?.paymentMethods || []).map((m, i) => (
               <div className="cuenta" key={i}>
                 <div>
@@ -396,7 +430,7 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
               <input type="file" accept="image/*" hidden onChange={(e) => e.target.files[0] && subirComprobante(e.target.files[0])} />
             </label>
             <p className="mut small" style={{ marginTop: 8 }}>
-              Tu número {padNum(numero, max)} queda apartado hasta que un administrador verifique el pago.
+              {numeros.length > 1 ? "Tus números" : "Tu número"} {rotulo} {numeros.length > 1 ? "quedan apartados" : "queda apartado"} hasta que un administrador verifique el pago.
             </p>
           </>
         )}
@@ -407,8 +441,8 @@ function CompraModal({ slug, numero, max, priceCents, backendBase, onClose }) {
           <div style={{ textAlign: "center", padding: "10px 0" }}>
             <div style={{ fontSize: 40 }}>✅</div>
             <p><strong>Comprobante recibido.</strong></p>
-            <p className="mut small">Tu número {padNum(numero, max)} queda reservado hasta que se verifique el pago.</p>
-            <button className="btn" onClick={onClose} style={{ marginTop: 8 }}>Entendido</button>
+            <p className="mut small">{numeros.length > 1 ? "Tus números" : "Tu número"} {rotulo} {numeros.length > 1 ? "quedan reservados" : "queda reservado"} hasta que se verifique el pago.</p>
+            <button className="btn" onClick={() => onClose(true)} style={{ marginTop: 8 }}>Entendido</button>
           </div>
         )}
       </div>

@@ -276,6 +276,14 @@ h1, h2, h3 { line-height: 1.1; margin: 0; letter-spacing: -0.02em; }
   border: 1px solid var(--line);
 }
 .num.sold { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+/* Numero seleccionado para comprar (multi-seleccion, hasta 10). */
+.num.sel {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.35);
+  transform: scale(1.04);
+}
 .num.win {
   background: var(--gold);
   color: #0b0b0d;
@@ -536,3 +544,34 @@ h1, h2, h3 { line-height: 1.1; margin: 0; letter-spacing: -0.02em; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* --------------------------- Barra de compra (multi-seleccion) --------------------------- */
+
+.buy-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 20;
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.buy-info { font-size: 0.95rem; }
+.buy-info b { color: var(--accent); }
+.buy-clear {
+  margin-left: 10px;
+  background: none;
+  border: none;
+  color: var(--mut);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+.buy-bar .btn { width: auto; padding: 10px 22px; }
+.aviso-max { color: var(--gold); font-weight: 600; }
