@@ -68,3 +68,6 @@ Thumbs.db
 # Build de la web
 apps/web/.next/
 apps/web/out/
+
+# APK admin: la UI se copia de apps/admin-windows/src en cada build (fuente unica)
+apps/admin-android/app/src/main/assets/

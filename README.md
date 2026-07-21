@@ -20,7 +20,11 @@ Los binarios se publican **automáticamente** en la [**última release**](https:
 | Artefacto | Archivo | Plataforma |
 | --- | --- | --- |
 | App cliente | `SorteosRifas-Cliente-<tag>.apk` | Android 7.0+ |
+| App administrador | `SorteosRifas-Admin-<tag>.apk` | Android 7.0+ |
 | App administrador | `SorteosRifas-Admin-<tag>.msi` | Windows 10/11 |
+
+> El **admin de Android** es la misma interfaz del admin de escritorio dentro de una app
+> (un WebView): se administra igual y se inicia sesión con las **mismas credenciales**.
 
 > Cada nueva versión reemplaza a la anterior: **siempre queda solo la última release**, con los binarios nombrados con su tag.
 
