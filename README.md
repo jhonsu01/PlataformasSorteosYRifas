@@ -2,7 +2,7 @@
 
 # 🎟️ Sorteos y Rifas
 
-**Framework open source para crear y gestionar sorteos/rifas por números**, con app cliente Android (APK), app administrador Windows (MSI), web pública (Vercel) y GitHub como fuente de verdad pública.
+**Framework open source para crear y gestionar sorteos/rifas por números**, con app cliente Android (APK), apps administrador (Windows MSI + Android APK), **app de vendedores/promotores** (Android APK), web pública (Vercel) y GitHub como fuente de verdad pública.
 
 [![Release](https://img.shields.io/github/v/release/jhonsu01/PlataformasSorteosYRifas?label=última%20release&color=7c3aed)](https://github.com/jhonsu01/PlataformasSorteosYRifas/releases/latest)
 [![CI](https://github.com/jhonsu01/PlataformasSorteosYRifas/actions/workflows/ci.yml/badge.svg)](https://github.com/jhonsu01/PlataformasSorteosYRifas/actions/workflows/ci.yml)
@@ -21,12 +21,37 @@ Los binarios se publican **automáticamente** en la [**última release**](https:
 | --- | --- | --- |
 | App cliente | `SorteosRifas-Cliente-<tag>.apk` | Android 7.0+ |
 | App administrador | `SorteosRifas-Admin-<tag>.apk` | Android 7.0+ |
+| App vendedor/promotor | `SorteosRifas-Vendedor-<tag>.apk` | Android 7.0+ |
 | App administrador | `SorteosRifas-Admin-<tag>.msi` | Windows 10/11 |
 
 > El **admin de Android** es la misma interfaz del admin de escritorio dentro de una app
 > (un WebView): se administra igual y se inicia sesión con las **mismas credenciales**.
 
+> La **app de vendedor** es para promotores que **no son administradores**: solo ven las
+> rifas que el admin les asignó y **verifican pagos manuales** de esas rifas (pueden activar
+> su propio 2FA). No crean rifas ni anulan ventas. El administrador crea la cuenta desde
+> **Usuarios vendedores** y al vendedor le llega un correo con sus datos de ingreso.
+
 > Cada nueva versión reemplaza a la anterior: **siempre queda solo la última release**, con los binarios nombrados con su tag.
+
+---
+
+## ✨ Novedades recientes
+
+- **Comprar hasta 10 números en una sola compra, con un solo pago** (cliente APK y web).
+  La reserva es **atómica** (o entran todos o ninguno) y el pago es único: un checkout de
+  Wompi por el total o **un** comprobante manual para toda la orden. En el admin cada compra
+  múltiple aparece marcada como **«🧩 orden de N»** y aprobar/rechazar afecta a todos sus números.
+- **Usuarios vendedores/promotores** (rol sin privilegios de administrador). El admin los crea
+  desde **Usuarios vendedores** (solo nombre, correo y contraseña), les asigna una o varias
+  rifas y puede **revocar** el acceso sin borrar la cuenta. Al crearlos se les envía un **correo**
+  con sus datos de ingreso, el enlace de descarga y los pasos. En **Comprobantes** se ve **quién
+  autorizó** cada pago, se puede **filtrar por vendedor y por fechas**, contar los números
+  confirmados y **exportarlos a JSON**. Un vendedor **no puede anular** ventas (solo el admin).
+- **App administrador para Android** y **app de vendedor para Android** (WebView), además del
+  admin de escritorio (MSI).
+
+Historial completo por versión: [releases](https://github.com/jhonsu01/PlataformasSorteosYRifas/releases).
 
 ---
 
@@ -36,7 +61,11 @@ Los binarios se publican **automáticamente** en la [**última release**](https:
 PlataformasSorteosYRifas/
 ├── apps/
 │   ├── android/         # App cliente (Kotlin + Jetpack Compose → APK)
-│   ├── admin-windows/   # App administrador (Tauri v2 → MSI)
+│   ├── admin-windows/   # App administrador (Tauri v2 → MSI). Su frontend web
+│   │                    #   (src/) es la FUENTE ÚNICA de la UI del admin.
+│   ├── admin-android/   # App administrador Android (WebView de admin-windows/src)
+│   ├── seller-web/      # App vendedor (SPA autocontenida)
+│   ├── seller-android/  # App vendedor Android (WebView de seller-web/src)
 │   └── web/             # Web pública (Next.js → Vercel)
 ├── packages/
 │   └── schemas/         # JSON Schemas públicos (raffle / numbers / draw)
@@ -53,13 +82,19 @@ PlataformasSorteosYRifas/
 ## 💳 Flujo de compra (APK → Wompi → webhook)
 
 ```
-Usuario toca un número libre en el APK
-   └→ Backend reserva el número (atómico) y firma la referencia (HMAC integridad)
-        └→ APK abre el Checkout de Wompi en un WebView
-             └→ Wompi cobra y redirige (el APK detecta el retorno)
-                  └→ Wompi envía el webhook al backend → firma verificada → número VENDIDO
+Usuario elige de 1 a 10 números libres (una sola compra, un solo pago)
+   └→ Backend reserva TODOS los números (atómico: o entran todos o ninguno) bajo una
+      ORDEN y firma la referencia de la orden por el total (HMAC integridad)
+        └→ APK/web abre el Checkout de Wompi por el total en un WebView
+             └→ Wompi cobra y redirige (la app detecta el retorno)
+                  └→ Wompi envía el webhook al backend → firma verificada → se venden
+                     TODOS los números de la orden
                        └→ Se publica el estado público → web y apps lo reflejan
 ```
+
+> **Pago manual (Nequi/transferencia):** en vez de Wompi, el comprador sube **un**
+> comprobante que cubre toda la orden; un administrador o un **vendedor asignado** lo
+> verifica y se venden todos sus números.
 
 Configura la URL del backend desde el icono **⚙** de la app (no requiere recompilar).
 Sin backend configurado, la app funciona en modo consulta sobre el JSON público.
@@ -170,8 +205,8 @@ BACKEND_PUBLIC_BASE=http://localhost:8787 npm run dev
 
 ### Fase 1 · Correr los tests (hazlo antes de producción)
 
-El backend trae **116 pruebas**. Sin base corren las de lógica en memoria; con PostgreSQL
-corren **todas** (incluidas reserva atómica, privacidad y pagos):
+El backend trae **130 pruebas**. Sin base corren las de lógica en memoria; con PostgreSQL
+corren **todas** (incluidas reserva atómica y por lote, privacidad, pagos y vendedores):
 
 ```bash
 cd services/backend
@@ -181,7 +216,7 @@ npm test                     # pruebas en memoria (rápidas)
 docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=sorteos_test -p 5432:5432 -d postgres:16
 DATABASE_URL="postgres://postgres:postgres@localhost:5432/sorteos_test" \
   JWT_ACCESS_SECRET="clave-cualquiera-para-test" npm test
-# -> # tests 116 · # pass 116 · # fail 0
+# -> # tests 130 · # pass 130 · # fail 0
 ```
 
 Y la validación de **privacidad** del estado público (lo mismo que corre CI en cada push):
@@ -231,6 +266,14 @@ esto no compila nada). Luego añade las variables en **Settings → Environment 
 | `GITHUB_RIFFLES_TOKEN` | opcional | PAT fine-grained (ver Fase 5) |
 | `GITHUB_RIFFLES_OWNER` | opcional | tu organización de GitHub |
 | `WEB_PUBLIC_BASE` | opcional | URL de tu web pública (para el enlace del repo) |
+| `GMAIL_USER` | opcional | correo Gmail que envía los datos al vendedor (p. ej. `tuenvio@gmail.com`) |
+| `GMAIL_APP_PASSWORD` | opcional | **contraseña de aplicación** de ese Gmail (16 caracteres, **sin espacios**) — no la clave normal |
+| `DOWNLOAD_BASE` | opcional | página de descargas para el correo del vendedor (por defecto, la última release) |
+
+> 📧 **Correo al vendedor (opcional):** `GMAIL_USER` + `GMAIL_APP_PASSWORD` sirven para que, al
+> crear un vendedor, el sistema le mande sus datos de ingreso por correo. Si no las pones, el
+> vendedor **se crea igual** y el admin le pasa los datos a mano. La app-password se genera en la
+> cuenta de Google (con verificación en 2 pasos activa) → **Contraseñas de aplicaciones**.
 
 > ⚠️ **Sin `JWT_ACCESS_SECRET` el backend no arranca** (responde 500) si hay `DATABASE_URL`.
 > Es a propósito: en serverless cada contenedor generaría un secreto distinto y las
@@ -267,6 +310,17 @@ Luego, en la **app Admin** (descárgala de la [última release](https://github.c
 3. **Seguridad** → *Generar secreto* → añádelo en Google Authenticator/Authy → escribe el
    código → **Activar 2FA**. Es obligatorio para `SUPER_ADMIN`/`ADMIN`: sin 2FA, una clave
    filtrada bastaría para aprobar pagos.
+
+---
+
+### Fase 4.5 · Vendedores/promotores (opcional)
+
+Si delegas la verificación de pagos manuales, créalos desde la **app Admin → Usuarios
+vendedores**: escribe **nombre, correo y contraseña**, marca las rifas que podrá verificar y
+**Crear**. La cuenta queda activa; si configuraste `GMAIL_USER`/`GMAIL_APP_PASSWORD` (Fase 3),
+al vendedor le llega un correo con sus datos y el enlace para instalar
+`SorteosRifas-Vendedor-<tag>.apk`. Puedes **asignar/revocar** rifas cuando quieras sin borrar la
+cuenta. El vendedor **solo** ve sus rifas asignadas y **verifica** pagos manuales (no anula).
 
 ---
 
