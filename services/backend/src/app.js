@@ -6,7 +6,7 @@
 // serverless el contenedor se reutiliza entre invocaciones, asi que no se abre
 // un pool nuevo por request.
 
-import { config, jwtSecretIsEphemeral, wompiEnvValid, safeWompiEnv, isGithubConfigured } from "./config.js";
+import { config, jwtSecretIsEphemeral, wompiEnvValid, safeWompiEnv, wompiKeyMode, isGithubConfigured } from "./config.js";
 import { createStore, normalizePhone } from "./store.js";
 import { createPostgresStore } from "./store-postgres.js";
 import { verifyEventSignature, actionForStatus, integritySignature } from "./wompi.js";
@@ -197,6 +197,15 @@ export async function handler(req, res) {
         wompiConfigured: Boolean(config.wompi.publicKey),
         wompiIntegrityConfigured: Boolean(config.wompi.integrityKey),
         wompiEventsConfigured: Boolean(config.wompi.eventsKey),
+        // Modo REAL de cada llave (prod/test/desconocido) por su prefijo, NUNCA su
+        // valor. Esto es lo que decide si el cobro es real: el Checkout abre en el
+        // modo de la LLAVE PUBLICA, no de WOMPI_ENV. Si aqui sale "test", el cobro
+        // es de prueba aunque env sea "prod".
+        wompiKeyModes: {
+          publicKey: wompiKeyMode(config.wompi.publicKey),
+          integrity: wompiKeyMode(config.wompi.integrityKey),
+          events: wompiKeyMode(config.wompi.eventsKey),
+        },
         githubConfigured: isGithubConfigured(),
         // URL base de la web publica: el admin la usa para mostrar/copiar el
         // enlace publico de cada rifa (`${webPublicBase}/${slug}`).

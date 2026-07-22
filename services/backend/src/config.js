@@ -128,3 +128,20 @@ export const wompiEnvValid = ["test", "prod"].includes(config.wompi.env);
  * por error, /health lo publicaria a internet (paso de verdad).
  */
 export const safeWompiEnv = () => (wompiEnvValid ? config.wompi.env : "invalido");
+
+/**
+ * Modo REAL de una llave de Wompi segun su prefijo (nunca su valor):
+ * "prod" | "test" | "desconocido" | "vacio".
+ *
+ * Es lo que de verdad decide si el cobro es real: el Checkout abre en modo test o
+ * prod segun el prefijo de la LLAVE PUBLICA (pub_test_ / pub_prod_), NO segun
+ * WOMPI_ENV (que aqui es solo informativo). Se expone en /health para diagnosticar
+ * "puse env=prod pero sigue en pruebas" sin filtrar el secreto.
+ */
+export const wompiKeyMode = (v) => {
+  const s = String(v || "");
+  if (!s) return "vacio";
+  if (s.includes("prod_")) return "prod";
+  if (s.includes("test_")) return "test";
+  return "desconocido";
+};
