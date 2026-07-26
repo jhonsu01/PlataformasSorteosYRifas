@@ -2,6 +2,11 @@
 
 # 🎟️ Sorteos y Rifas
 
+<div align="center">
+  <img src="./assets/banner.png" alt="PlataformasSorteosYRifas  Banner" width="100%" />
+
+  </div>
+
 **Framework open source para crear y gestionar sorteos/rifas por números**, con app cliente Android (APK), apps administrador (Windows MSI + Android APK), **app de vendedores/promotores** (Android APK), web pública (Vercel) y GitHub como fuente de verdad pública.
 
 [![Release](https://img.shields.io/github/v/release/jhonsu01/PlataformasSorteosYRifas?label=última%20release&color=7c3aed)](https://github.com/jhonsu01/PlataformasSorteosYRifas/releases/latest)
